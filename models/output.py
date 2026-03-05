@@ -44,4 +44,25 @@ class SingleSiteOutput(BaseModel):
     sensitivity: List[SensitivityScenario] = Field(..., description="Sensitivity results for key parameters")
 
 
-# future portfolio models will go here
+class PortfolioOutput(BaseModel):
+    """Portfolio calculation output - aggregated results across multiple sites"""
+    portfolio_name: str = Field(..., description="Portfolio name")
+    timestamp: datetime = Field(default_factory=datetime.utcnow,
+                               description="Calculation timestamp")
+
+    # Individual site results
+    sites: List[SingleSiteOutput] = Field(..., description="Results for each site")
+
+    # Aggregated portfolio metrics
+    total_capex_usd: float = Field(..., description="Total portfolio CAPEX in USD")
+    total_annual_opex_usd: float = Field(..., description="Total portfolio annual OPEX in USD")
+    total_annual_revenue_usd: float = Field(..., description="Total portfolio annual revenue in USD")
+    total_annual_ebitda_usd: float = Field(..., description="Total portfolio annual EBITDA in USD")
+    
+    # Portfolio financial metrics
+    portfolio_irr_percent: float = Field(..., description="Portfolio blended IRR in %")
+    portfolio_npv_usd: float = Field(default=None, description="Portfolio NPV in USD (optional)")
+    
+    # Aggregated monthly data for charting
+    monthly_data: List[MonthlyDataPoint] = Field(...,
+                                                  description="Aggregated 12-month revenue vs OPEX data")

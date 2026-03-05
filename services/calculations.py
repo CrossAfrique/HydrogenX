@@ -1,20 +1,25 @@
 """
-HydrogenX calculation service: single-site energy and financial models
-The HydrogenCalculator class encapsulates the full logic required for
-one-site sizing, revenue, cost and financial analysis.  A separate
-portfolio calculator will be built later.
+HydrogenX Calculation Service - Load-Centric Architecture
+
+Core principle: All sizing derives from three primary inputs:
+1. Daily Load (kW)
+2. Battery Autonomy (hours)
+3. Hydrogen Autonomy (hours)
+
+Everything else is automatically calculated from these values.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Dict
+from typing import List
 
 import math
 
-from models.schemas import SingleSiteInput
+from models.schemas import SingleSiteInput, PortfolioInput
 from models.output import (
     SingleSiteOutput,
+    PortfolioOutput,
     SizingOutput,
     CapexBreakdownOutput,
     OpexBreakdownOutput,
@@ -26,95 +31,66 @@ from models.output import (
 
 
 class HydrogenCalculator:
-    """Per‑site calculation logic for HydrogenX.
-
-    Everything needed to produce the frontend payload for a single
-    installation lives here.  The public entrypoint is
-    :meth:`calculate_single_site`, which returns a
-    :class:`models.output.SingleSiteOutput` instance ready for
-    serialization.
+    """Load-centric calculation engine for HydrogenX.
+    
+    All component sizing is derived from:
+    - daily_load_kw: facility's average daily load
+    - battery_autonomy_hours: hours of battery-only operation
+    - hydrogen_autonomy_hours: hours of H2 fuel cell operation
     """
 
-    # ------------------------------------------------------------------
-    # static cost parameters (can later be externalised)
-    # ------------------------------------------------------------------
+    # Cost data for components (USD units)
     COST_DATA = {
         "pv": {"capex_per_kwp": 800, "opex_percent_per_year": 0.5},
         "battery": {"capex_per_kwh": 300, "opex_percent_per_year": 1.0},
         "electrolyzer": {"capex_per_kw": 1200, "opex_percent_per_year": 2.0},
         "h2_storage": {"capex_per_kg": 50, "opex_percent_per_year": 1.5},
         "fuel_cell": {"capex_per_kw": 1500, "opex_percent_per_year": 2.5},
-        "bop": {"capex_percent": 15, "opex_percent_per_year": 1.0},
+        "balance_of_plant": {"capex_percent": 15, "opex_percent_per_year": 1.0},
     }
-
-    # ------------------------------------------------------------------
-    # public interface
-    # ------------------------------------------------------------------
 
     @classmethod
     def calculate_single_site(cls, input_data: SingleSiteInput) -> SingleSiteOutput:
-        """Perform the full single‑site calculation.
-
-        The method implements the complete chain described in the
-        project specification:
-
-        * sizing for all components
-        * CAPEX & OPEX calculation
-        * revenue streams (electricity, heat, oxygen)
-        * monthly breakdown for charting
-        * financial metrics (LCOE, LCOH, IRR, NPV, payback, EBITDA)
-        * sensitivity analysis on a handful of key parameters
-
-        :param input_data: user‑supplied payload from the frontend
-        :returns: a fully populated :class:`SingleSiteOutput`
+        """Calculate single site with load-centric architecture.
+        
+        Flow:
+        1. Derive component sizing from daily load and autonomy hours
+        2. Calculate annual production and consumption
+        3. Determine CAPEX and OPEX breakdown
+        4. Calculate revenue streams
+        5. Compute financial metrics
+        6. Generate monthly data for charting
+        7. Optional: sensitivity analysis
         """
         gp = input_data.global_params
+        ts = input_data.tech_specs
 
-        # ------------------------------------------------------------------
-        # energy sizing and production
-        # ------------------------------------------------------------------
-        daily_energy = cls._calculate_daily_pv_energy(
-            input_data.solar_pv.capacity_kwp,
-            input_data.solar_pv.performance_ratio,
-            gp.peak_sun_hours_per_day,
+        # === STEP 1: SIZING ===
+        sizing = cls._calculate_sizing_from_load(
+            daily_load_kw=input_data.daily_load_kw,
+            battery_autonomy_hours=input_data.battery_autonomy_hours,
+            hydrogen_autonomy_hours=input_data.hydrogen_autonomy_hours,
+            tech_specs=ts,
+            gp=gp,
         )
 
-        sizing = cls._calculate_sizing(input_data, daily_energy)
+        # === STEP 2: CAPEX ===
+        capex = cls._calculate_capex(sizing, gp)
 
-        # ------------------------------------------------------------------
-        # cost breakdowns
-        # ------------------------------------------------------------------
-        capex = cls._calculate_capex(input_data, sizing)
-        opex = cls._calculate_opex(input_data, sizing, capex)
+        # === STEP 3: OPEX ===
+        opex = cls._calculate_opex(sizing, capex)
 
-        # ------------------------------------------------------------------
-        # revenues
-        # ------------------------------------------------------------------
-        h2_annual_kg = cls._calculate_h2_production(
-            daily_energy, input_data.electrolyzer.specific_energy_kwh_per_kg, gp.operation_days_per_year
-        )
-        revenue = cls._calculate_revenue(
-            daily_energy, h2_annual_kg, input_data, gp
-        )
+        # === STEP 4: REVENUE ===
+        revenue = cls._calculate_revenue(sizing, gp, ts)
 
-        # ------------------------------------------------------------------
-        # financial metrics
-        # ------------------------------------------------------------------
-        financial = cls._calculate_financial_metrics(capex, opex, revenue, gp, input_data)
+        # === STEP 5: FINANCIAL METRICS ===
+        financial = cls._calculate_financial_metrics(capex, opex, revenue, gp, ts)
 
-        # ------------------------------------------------------------------
-        # monthly data for chart
-        # ------------------------------------------------------------------
-        monthly = cls._calculate_monthly_data(
-            daily_energy, h2_annual_kg, opex.total_opex_usd_per_year / 12, input_data, gp
-        )
+        # === STEP 6: MONTHLY DATA ===
+        monthly = cls._calculate_monthly_data(sizing, revenue, opex, gp)
 
-        # ------------------------------------------------------------------
-        # sensitivity analysis
-        # ------------------------------------------------------------------
-        sensitivity = cls._calculate_sensitivity(
-            input_data, sizing, capex, opex, revenue, gp
-        )
+        # === STEP 7: SENSITIVITY (optional) ===
+        sensitivity = cls._calculate_sensitivity(sizing, capex, opex, revenue, gp, ts)
 
         return SingleSiteOutput(
             site_name=input_data.site_name or "Site 1",
@@ -128,137 +104,260 @@ class HydrogenCalculator:
             sensitivity=sensitivity,
         )
 
-    # ------------------------------------------------------------------
-    # helper calculation blocks
-    # ------------------------------------------------------------------
+    @classmethod
+    def calculate_portfolio(cls, input_data: PortfolioInput) -> PortfolioOutput:
+        """Calculate portfolio aggregating multiple sites."""
+        # Calculate each site individually
+        site_outputs = []
+        for site in input_data.sites:
+            site_output = cls.calculate_single_site(site)
+            site_outputs.append(site_output)
 
-    @staticmethod
-    def _calculate_daily_pv_energy(
-        pv_capacity_kwp: float, performance_ratio: float, peak_sun_hours: float
-    ) -> float:
-        """Daily energy from PV using a user‑supplied peak sun hours."""
-        return pv_capacity_kwp * performance_ratio * peak_sun_hours
+        # Aggregate metrics
+        total_capex = sum(s.capex_breakdown.total_capex_after_subsidy_usd for s in site_outputs)
+        total_opex = sum(s.opex_breakdown.total_opex_usd_per_year for s in site_outputs)
+        total_revenue = sum(s.revenue_streams.total_revenue_usd_per_year for s in site_outputs)
+        total_ebitda = total_revenue - total_opex
 
-    @staticmethod
-    def _calculate_sizing(input_data: SingleSiteInput, daily_energy: float) -> SizingOutput:
-        """Derive basic component sizes.
+        # Aggregate monthly data
+        monthly_data = cls._aggregate_monthly_data(site_outputs)
 
-        Battery usable capacity is capacity * (1 - reserve SOC).
-        Hydrogen storage uses autonomy hours and daily daily production.
+        # Portfolio IRR and NPV (simplified: weighted average)
+        irr_avg = sum(s.financial_metrics.irr_percent for s in site_outputs) / len(site_outputs)
+        npv_sum = sum(s.financial_metrics.npv_usd for s in site_outputs)
+
+        return PortfolioOutput(
+            portfolio_name=input_data.portfolio_name or "Portfolio",
+            timestamp=datetime.utcnow(),
+            sites=site_outputs,
+            total_capex_usd=total_capex,
+            total_annual_opex_usd=total_opex,
+            total_annual_revenue_usd=total_revenue,
+            total_annual_ebitda_usd=total_ebitda,
+            portfolio_irr_percent=irr_avg,
+            portfolio_npv_usd=npv_sum,
+            monthly_data=monthly_data,
+        )
+
+    # ========== SIZING LOGIC ==========
+
+    @classmethod
+    def _calculate_sizing_from_load(
+        cls,
+        daily_load_kw: float,
+        battery_autonomy_hours: float,
+        hydrogen_autonomy_hours: float,
+        tech_specs,
+        gp,
+    ) -> SizingOutput:
+        """Derive all component sizing from daily load and autonomy hours.
+        
+        This is the core load-centric logic:
+        - Daily consumption = daily_load_kw * 24 hours
+        - Battery capacity sized for battery_autonomy_hours of autonomy
+        - H2 storage sized for hydrogen_autonomy_hours of autonomy
+        - Electrolyzer, fuel cell, and PV sized accordingly
         """
-        pv = input_data.solar_pv.capacity_kwp
-        batt_gross = input_data.battery_storage.capacity_kwh
-        batt_usable = batt_gross * (1 - input_data.battery_storage.reserve_soc_percent / 100)
 
-        electrolyzer_kw = input_data.electrolyzer.power_kw
+        # Daily consumption
+        daily_consumption_kwh = daily_load_kw * 24
 
-        h2_daily_kg = daily_energy / input_data.electrolyzer.specific_energy_kwh_per_kg
-        h2_storage = h2_daily_kg * (input_data.hydrogen_storage.autonomy_hours / 24)
+        # === BATTERY SIZING ===
+        # Battery needs to provide 'battery_autonomy_hours' worth of energy
+        # accounting for usable ratio (reserve SOC)
+        battery_usable_needed = daily_load_kw * battery_autonomy_hours
+        battery_gross_capacity = battery_usable_needed / tech_specs.battery_usable_ratio
+        battery_power_rating = daily_load_kw * 1.5  # 50% headroom for peak loads
 
-        fc_kw = input_data.fuel_cell.power_rating_kw
+        # === HYDROGEN & FUEL CELL SIZING ===
+        # H2 covers additional autonomy beyond battery
+        # Electrolyzer efficiency: useful energy / electrical input
+        electrolyzer_efficiency_decimal = tech_specs.electrolyzer_efficiency_percent / 100
+
+        # Daily H2 production needed (assuming electrolyzer runs daily)
+        # At 75% efficiency, ~50 kWh needed per kg of H2 produced
+        kwh_per_kg_h2 = 50 / electrolyzer_efficiency_decimal
+        h2_daily_kg = daily_consumption_kwh / kwh_per_kg_h2
+
+        # H2 storage for the autonomy period
+        h2_storage_capacity = h2_daily_kg * (hydrogen_autonomy_hours / 24) if hydrogen_autonomy_hours > 0 else 0
+
+        # Fuel cell power rating = load that H2 needs to serve
+        # Assuming fuel cell covers the hydrogen autonomy load
+        fc_load_kw = daily_load_kw
+        fuel_cell_power_rating = fc_load_kw * 1.2  # 20% headroom
+
+        # Electrolyzer power rating
+        # Must produce daily H2 production during available sunlight hours (peak_sun_hours)
+        peak_sun_hours = tech_specs.peak_sun_hours_per_day
+        h2_power_needed = h2_daily_kg * kwh_per_kg_h2 / peak_sun_hours
+        electrolyzer_power_rating = h2_power_needed / electrolyzer_efficiency_decimal if peak_sun_hours > 0 else 0
+
+        # === PV SIZING ===
+        # PV must cover:
+        # 1. Direct load consumption
+        # 2. Battery charging losses
+        # 3. Electrolyzer energy needs
+        # 4. Efficiency losses
+
+        battery_efficiency_decimal = tech_specs.battery_efficiency_percent / 100
+        battery_charging_kwh = daily_consumption_kwh / battery_efficiency_decimal
+        efficiency_loss_factor = 1.15  # 15% additional for system losses
+
+        # Total daily PV energy needed
+        electrolyzer_daily_kwh = h2_daily_kg * kwh_per_kg_h2
+        pv_daily_energy_needed = (
+            daily_consumption_kwh  # Direct load
+            + (battery_charging_kwh - daily_consumption_kwh)  # Battery losses
+            + electrolyzer_daily_kwh  # Electrolyzer demand
+        ) * efficiency_loss_factor
+
+        pv_performance_ratio = tech_specs.pv_performance_ratio
+        pv_capacity_kwp = pv_daily_energy_needed / (peak_sun_hours * pv_performance_ratio) if peak_sun_hours > 0 else 0
 
         return SizingOutput(
-            pv_capacity_kwp=pv,
-            battery_capacity_kwh=batt_gross,
-            electrolyzer_capacity_kw=electrolyzer_kw,
-            h2_storage_capacity_kg=h2_storage,
-            fuel_cell_capacity_kw=fc_kw,
+            daily_consumption_kwh=daily_consumption_kwh,
+            battery_capacity_kwh=battery_gross_capacity,
+            battery_power_rating_kw=battery_power_rating,
+            battery_usable_kwh=battery_usable_needed,
+            h2_daily_production_kg=h2_daily_kg,
+            h2_storage_capacity_kg=h2_storage_capacity,
+            electrolyzer_capacity_kw=electrolyzer_power_rating,
+            fuel_cell_capacity_kw=fuel_cell_power_rating,
+            pv_capacity_kwp=pv_capacity_kwp,
         )
 
+
+    # ========== COST CALCULATIONS ==========
+
     @classmethod
-    def _calculate_capex(
-        cls, input_data: SingleSiteInput, sizing: SizingOutput, capex_factors: Dict[str, float] = None
-    ) -> CapexBreakdownOutput:
-        """CAPEX breakdown with optional component multipliers."""
+    def _calculate_capex(cls, sizing: SizingOutput, gp) -> CapexBreakdownOutput:
+        """Calculate CAPEX breakdown from sized components."""
         c = cls.COST_DATA
-        factors = capex_factors or {}
 
-        pv_cost = sizing.pv_capacity_kwp * c["pv"]["capex_per_kwp"] * factors.get("pv", 1.0)
-        batt_cost = sizing.battery_capacity_kwh * c["battery"]["capex_per_kwh"] * factors.get("battery", 1.0)
-        electrolyzer_cost = sizing.electrolyzer_capacity_kw * c["electrolyzer"]["capex_per_kw"] * factors.get("electrolyzer", 1.0)
-        h2_cost = sizing.h2_storage_capacity_kg * c["h2_storage"]["capex_per_kg"] * factors.get("h2_storage", 1.0)
-        fc_cost = sizing.fuel_cell_capacity_kw * c["fuel_cell"]["capex_per_kw"] * factors.get("fuel_cell", 1.0)
+        # Component costs
+        pv_capex = sizing.pv_capacity_kwp * c["pv"]["capex_per_kwp"]
+        battery_capex = sizing.battery_capacity_kwh * c["battery"]["capex_per_kwh"]
+        electrolyzer_capex = sizing.electrolyzer_capacity_kw * c["electrolyzer"]["capex_per_kw"]
+        h2_storage_capex = sizing.h2_storage_capacity_kg * c["h2_storage"]["capex_per_kg"]
+        fuel_cell_capex = sizing.fuel_cell_capacity_kw * c["fuel_cell"]["capex_per_kw"]
 
-        component_sum = pv_cost + batt_cost + electrolyzer_cost + h2_cost + fc_cost
-        bop_cost = component_sum * (c["bop"]["capex_percent"] / 100)
-        total = component_sum + bop_cost
-        after_sub = total * (1 - input_data.global_params.subsidy_percent / 100)
+        # Sum of all components
+        component_sum = (
+            pv_capex
+            + battery_capex
+            + electrolyzer_capex
+            + h2_storage_capex
+            + fuel_cell_capex
+        )
+
+        # Balance of Plant (15% of component sum)
+        bop_capex = component_sum * (c["balance_of_plant"]["capex_percent"] / 100)
+        total_capex = component_sum + bop_capex
+
+        # Apply subsidy
+        subsidy_amount = total_capex * (gp.subsidy_percent / 100)
+        capex_after_subsidy = total_capex - subsidy_amount
 
         return CapexBreakdownOutput(
-            pv_capex_usd=pv_cost,
-            battery_capex_usd=batt_cost,
-            electrolyzer_capex_usd=electrolyzer_cost,
-            h2_storage_capex_usd=h2_cost,
-            fuel_cell_capex_usd=fc_cost,
-            bop_capex_usd=bop_cost,
-            total_capex_usd=total,
-            after_subsidy_capex_usd=after_sub,
+            pv_capex_usd=pv_capex,
+            battery_capex_usd=battery_capex,
+            electrolyzer_capex_usd=electrolyzer_capex,
+            h2_storage_capex_usd=h2_storage_capex,
+            fuel_cell_capex_usd=fuel_cell_capex,
+            balance_of_plant_capex_usd=bop_capex,
+            total_capex_before_subsidy_usd=total_capex,
+            subsidy_usd=subsidy_amount,
+            total_capex_after_subsidy_usd=capex_after_subsidy,
         )
 
     @classmethod
-    def _calculate_opex(
-        cls, input_data: SingleSiteInput, sizing: SizingOutput, capex: CapexBreakdownOutput
-    ) -> OpexBreakdownOutput:
-        """Annual OPEX split into two groups, inflation handled later in cash flow."""
+    def _calculate_opex(cls, sizing: SizingOutput, capex: CapexBreakdownOutput) -> OpexBreakdownOutput:
+        """Calculate annual OPEX split into three groups."""
         c = cls.COST_DATA
 
-        pv_batt_opex = capex.pv_capex_usd * (c["pv"]["opex_percent_per_year"] / 100)
-        pv_batt_opex += capex.battery_capex_usd * (c["battery"]["opex_percent_per_year"] / 100)
-
-        elec_fc_opex = capex.electrolyzer_capex_usd * (c["electrolyzer"]["opex_percent_per_year"] / 100)
-        elec_fc_opex += capex.fuel_cell_capex_usd * (c["fuel_cell"]["opex_percent_per_year"] / 100)
-
-        # add h2 storage + bop
-        h2_opex = capex.h2_storage_capex_usd * (c["h2_storage"]["opex_percent_per_year"] / 100)
-        bop_opex = capex.bop_capex_usd * (c["bop"]["opex_percent_per_year"] / 100)
-
-        total = pv_batt_opex + elec_fc_opex + h2_opex + bop_opex
-        return OpexBreakdownOutput(
-            pv_battery_opex_usd_per_year=pv_batt_opex,
-            electrolyzer_fc_opex_usd_per_year=elec_fc_opex,
-            total_opex_usd_per_year=total,
+        # Group 1: PV + Battery O&M
+        pv_battery_opex = (
+            capex.pv_capex_usd * (c["pv"]["opex_percent_per_year"] / 100)
+            + capex.battery_capex_usd * (c["battery"]["opex_percent_per_year"] / 100)
         )
 
-    @staticmethod
-    def _calculate_h2_production(
-        daily_energy: float, specific_kwh_per_kg: float, operation_days: int
-    ) -> float:
-        return (daily_energy / specific_kwh_per_kg) * operation_days
+        # Group 2: Electrolyzer + Fuel Cell O&M
+        elec_fc_opex = (
+            capex.electrolyzer_capex_usd * (c["electrolyzer"]["opex_percent_per_year"] / 100)
+            + capex.fuel_cell_capex_usd * (c["fuel_cell"]["opex_percent_per_year"] / 100)
+        )
+
+        # Group 3: H2 Storage + Balance of Plant O&M
+        h2_bop_opex = (
+            capex.h2_storage_capex_usd * (c["h2_storage"]["opex_percent_per_year"] / 100)
+            + capex.balance_of_plant_capex_usd * (c["balance_of_plant"]["opex_percent_per_year"] / 100)
+        )
+
+        total_opex = pv_battery_opex + elec_fc_opex + h2_bop_opex
+
+        return OpexBreakdownOutput(
+            pv_battery_opex_usd_per_year=pv_battery_opex,
+            electrolyzer_fc_opex_usd_per_year=elec_fc_opex,
+            h2_storage_bop_opex_usd_per_year=h2_bop_opex,
+            total_opex_usd_per_year=total_opex,
+        )
+
+
+    # ========== REVENUE CALCULATIONS ==========
 
     @classmethod
-    def _calculate_revenue(
-        cls,
-        daily_energy: float,
-        annual_h2_kg: float,
-        input_data: SingleSiteInput,
-        gp,
-    ) -> RevenueStreamsOutput:
-        """Compute annual revenues taking into account baseload and grid limit."""
-        # electricity generated per year
-        annual_pv = daily_energy * gp.operation_days_per_year
-        thermal_load = input_data.thermal_baseload.capacity_kwth * gp.operation_days_per_year
-        excess = max(annual_pv - thermal_load, 0)
+    def _calculate_revenue(cls, sizing: SizingOutput, gp, tech_specs) -> RevenueStreamsOutput:
+        """Calculate annual revenue from all streams.
+        
+        Revenue sources:
+        1. H2 sales at specified price
+        2. Excess electricity sales
+        3. Heat recovery from electrolyzer
+        4. Oxygen byproduct (8 kg O2 per kg H2)
+        """
+        # Daily production values
+        h2_daily_kg = sizing.h2_daily_production_kg
+        operation_days = gp.operation_days_per_year
 
-        # limit by grid import (export) capacity
-        grid_limit_energy = input_data.generator_grid.grid_import_limit_kw * gp.operation_days_per_year
-        export_energy = min(excess, grid_limit_energy)
+        # Annual production
+        h2_annual_kg = h2_daily_kg * operation_days
+        
+        # Oxygen byproduct: 8 kg O2 per kg H2
+        o2_annual_kg = h2_annual_kg * 8
 
-        elec_rev = export_energy * gp.electricity_price_usd_per_kwh
+        # H2 Sales Revenue
+        h2_revenue = h2_annual_kg * gp.h2_price_usd_per_kg
 
-        heat_recovered = annual_pv * (input_data.electrolyzer.heat_recovery_percent / 100)
-        heat_available = max(heat_recovered - thermal_load, 0)
-        heat_rev = heat_available * gp.heat_price_usd_per_kwh
+        # Electricity sales (simplified: small percentage of PV production available for export)
+        pv_daily_kwh = sizing.pv_capacity_kwp * tech_specs.peak_sun_hours_per_day
+        pv_annual_kwh = pv_daily_kwh * operation_days
+        
+        # Assume 10% excess available after load and H2 production
+        excess_electricity_kwh = pv_annual_kwh * 0.10
+        electricity_revenue = excess_electricity_kwh * gp.electricity_price_usd_per_kwh
 
-        o2_kg = annual_h2_kg * 8
-        o2_rev = o2_kg * gp.oxygen_price_usd_per_kg
+        # Heat recovery from electrolyzer
+        # Heat available = PV energy * heat recovery % - thermalLoad
+        pv_energy_for_heat = pv_annual_kwh * (1 - 0.75)  # 75% goes to H2, 25% available
+        heat_available_kwh = pv_energy_for_heat
+        heat_revenue = heat_available_kwh * gp.heat_price_usd_per_kwh
 
-        total_rev = elec_rev + heat_rev + o2_rev
+        # Oxygen sales
+        oxygen_revenue = o2_annual_kg * gp.oxygen_price_usd_per_kg
+
+        total_revenue = h2_revenue + electricity_revenue + heat_revenue + oxygen_revenue
+
         return RevenueStreamsOutput(
-            electricity_revenue_usd_per_year=elec_rev,
-            heat_revenue_usd_per_year=heat_rev,
-            oxygen_revenue_usd_per_year=o2_rev,
-            total_revenue_usd_per_year=total_rev,
+            h2_sales_revenue_usd_per_year=h2_revenue,
+            electricity_sales_revenue_usd_per_year=electricity_revenue,
+            heat_recovery_revenue_usd_per_year=heat_revenue,
+            oxygen_byproduct_revenue_usd_per_year=oxygen_revenue,
+            total_revenue_usd_per_year=total_revenue,
         )
+
+
+    # ========== FINANCIAL METRICS ==========
 
     @classmethod
     def _calculate_financial_metrics(
@@ -267,31 +366,37 @@ class HydrogenCalculator:
         opex: OpexBreakdownOutput,
         revenue: RevenueStreamsOutput,
         gp,
-        input_data: SingleSiteInput,
+        tech_specs,
     ) -> FinancialMetricsOutput:
-        inv = capex.after_subsidy_capex_usd
-        annual_rev = revenue.total_revenue_usd_per_year
+        """Calculate key financial metrics with inflation and discounting."""
+        inv = capex.total_capex_after_subsidy_usd
+        annual_revenue = revenue.total_revenue_usd_per_year
         annual_opex = opex.total_opex_usd_per_year
-        annual_ebitda = annual_rev - annual_opex
+        annual_ebitda = annual_revenue - annual_opex
 
         discount = gp.discount_rate_percent / 100
         life = gp.project_lifetime_years
         inflation = gp.inflation_percent / 100
 
-        # cash flows with inflation applied to EBITDA
+        # Build cash flows with inflation
         cash_flows = [-inv]
         for yr in range(1, life + 1):
+            # Inflate EBITDA for future years
             cf = annual_ebitda * ((1 + inflation) ** (yr - 1))
             cash_flows.append(cf)
 
+        # Calculate NPV and IRR
         npv = cls._calculate_npv(cash_flows, discount)
         irr = cls._calculate_irr(cash_flows) * 100
-        payback = cls._calculate_payback_period(inv, annual_ebitda)
 
-        # energy metrics
-        annual_energy = gp.operation_days_per_year * gp.peak_sun_hours_per_day * input_data.solar_pv.capacity_kwp * 0.8
-        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_energy, discount, life)
-        annual_h2 = (gp.operation_days_per_year * gp.peak_sun_hours_per_day * input_data.solar_pv.capacity_kwp) / input_data.electrolyzer.specific_energy_kwh_per_kg
+        # Payback period (simple, without discounting)
+        payback = cls._calculate_payback_period(inv, annual_ebitda) if annual_ebitda > 0 else float("inf")
+
+        # LCOE and LCOH
+        annual_electricity = 365 * tech_specs.peak_sun_hours_per_day * 1  # Simplified
+        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity, discount, life)
+        
+        annual_h2 = annual_ebitda / gp.h2_price_usd_per_kg if gp.h2_price_usd_per_kg > 0 else 0
         lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2, discount, life)
 
         return FinancialMetricsOutput(
@@ -303,16 +408,15 @@ class HydrogenCalculator:
             ebitda_usd_per_year=annual_ebitda,
         )
 
-    # ------------------------------------------------------------------
-    # financial math helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _calculate_npv(cash_flows: List[float], discount_rate: float) -> float:
+        """Calculate NPV given cash flows and discount rate."""
         return sum(cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows))
 
     @staticmethod
     def _calculate_irr(cash_flows: List[float], guess: float = 0.1, iterations: int = 1000) -> float:
+        """Calculate IRR using Newton-Raphson method."""
         rate = guess
         for _ in range(iterations):
             npv = sum(cf / ((1 + rate) ** t) for t, cf in enumerate(cash_flows))
@@ -324,6 +428,7 @@ class HydrogenCalculator:
 
     @staticmethod
     def _calculate_payback_period(investment: float, annual_cash_flow: float) -> float:
+        """Simple payback period calculation."""
         return investment / annual_cash_flow if annual_cash_flow > 0 else float("inf")
 
     @staticmethod
@@ -334,9 +439,14 @@ class HydrogenCalculator:
         discount_rate: float,
         project_life: int,
     ) -> float:
+        """Levelized Cost of Energy."""
         if annual_energy_kwh <= 0:
             return 0
-        annuity = discount_rate * (1 + discount_rate) ** project_life / ((1 + discount_rate) ** project_life - 1)
+        dr = discount_rate
+        if dr > 0:
+            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+        else:
+            annuity = 1 / project_life
         return (investment * annuity + annual_opex) / annual_energy_kwh
 
     @staticmethod
@@ -347,98 +457,155 @@ class HydrogenCalculator:
         discount_rate: float,
         project_life: int,
     ) -> float:
+        """Levelized Cost of Hydrogen."""
         if annual_h2_kg <= 0:
             return 0
-        annuity = discount_rate * (1 + discount_rate) ** project_life / ((1 + discount_rate) ** project_life - 1)
+        dr = discount_rate
+        if dr > 0:
+            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+        else:
+            annuity = 1 / project_life
         return (investment * annuity + annual_opex) / annual_h2_kg
 
-    # ------------------------------------------------------------------
-    # charting helpers
-    # ------------------------------------------------------------------
 
-    @staticmethod
+    # ========== MONTHLY DATA FOR CHARTING ==========
+
+    @classmethod
     def _calculate_monthly_data(
-        daily_energy: float,
-        annual_h2_kg: float,
-        monthly_opex: float,
-        input_data: SingleSiteInput,
+        cls,
+        sizing: SizingOutput,
+        revenue: RevenueStreamsOutput,
+        opex: OpexBreakdownOutput,
         gp,
     ) -> List[MonthlyDataPoint]:
-        """Create 12 uniform monthly points for stacked bar chart."""
+        """Generate 12 months of revenue vs OPEX data for charting."""
         data = []
-        monthly_energy = daily_energy * 30
-        monthly_h2 = annual_h2_kg / 12
-        for m in range(1, 13):
-            elec = monthly_energy * 0.8 * gp.electricity_price_usd_per_kwh
-            heat = monthly_energy * (input_data.electrolyzer.heat_recovery_percent / 100) * gp.heat_price_usd_per_kwh
-            o2 = monthly_h2 * 8 * gp.oxygen_price_usd_per_kg
-            total_rev = elec + heat + o2
-            ebitda = total_rev - monthly_opex
+
+        # Monthly values (assume uniform distribution)
+        monthly_h2_revenue = revenue.h2_sales_revenue_usd_per_year / 12
+        monthly_electricity_revenue = revenue.electricity_sales_revenue_usd_per_year / 12
+        monthly_heat_revenue = revenue.heat_recovery_revenue_usd_per_year / 12
+        monthly_o2_revenue = revenue.oxygen_byproduct_revenue_usd_per_year / 12
+        monthly_opex_base = opex.total_opex_usd_per_year / 12
+
+        for month in range(1, 13):
+            # Apply seasonal variation if needed (simplified: use uniform)
+            monthly_total_revenue = (
+                monthly_h2_revenue
+                + monthly_electricity_revenue
+                + monthly_heat_revenue
+                + monthly_o2_revenue
+            )
+
+            # OPEX with inflation applied to current month
+            inflation_factor = (1 + gp.inflation_percent / 100) ** ((month - 1) / 12)
+            monthly_opex = monthly_opex_base * inflation_factor
+
+            monthly_ebitda = monthly_total_revenue - monthly_opex
+
             data.append(
                 MonthlyDataPoint(
-                    month=m,
-                    electricity_revenue=elec,
-                    heat_revenue=heat,
-                    oxygen_revenue=o2,
+                    month=month,
+                    h2_revenue=monthly_h2_revenue,
+                    electricity_revenue=monthly_electricity_revenue,
+                    heat_revenue=monthly_heat_revenue,
+                    oxygen_revenue=monthly_o2_revenue,
+                    total_revenue=monthly_total_revenue,
                     total_opex=monthly_opex,
-                    ebitda=ebitda,
+                    ebitda=monthly_ebitda,
                 )
             )
+
         return data
 
-    # ------------------------------------------------------------------
-    # sensitivity analysis
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _aggregate_monthly_data(site_outputs: List[SingleSiteOutput]) -> List[MonthlyDataPoint]:
+        """Aggregate monthly data across multiple sites."""
+        aggregated = {}
+        for month in range(1, 13):
+            h2_rev = sum(s.monthly_data[month - 1].h2_revenue for s in site_outputs)
+            elec_rev = sum(s.monthly_data[month - 1].electricity_revenue for s in site_outputs)
+            heat_rev = sum(s.monthly_data[month - 1].heat_revenue for s in site_outputs)
+            o2_rev = sum(s.monthly_data[month - 1].oxygen_revenue for s in site_outputs)
+            total_rev = sum(s.monthly_data[month - 1].total_revenue for s in site_outputs)
+            opex = sum(s.monthly_data[month - 1].total_opex for s in site_outputs)
+            ebitda = sum(s.monthly_data[month - 1].ebitda for s in site_outputs)
+
+            aggregated[month] = MonthlyDataPoint(
+                month=month,
+                h2_revenue=h2_rev,
+                electricity_revenue=elec_rev,
+                heat_revenue=heat_rev,
+                oxygen_revenue=o2_rev,
+                total_revenue=total_rev,
+                total_opex=opex,
+                ebitda=ebitda,
+            )
+
+        return [aggregated[m] for m in range(1, 13)]
+
+    # ========== SENSITIVITY ANALYSIS ==========
 
     @classmethod
     def _calculate_sensitivity(
         cls,
-        input_data: SingleSiteInput,
         sizing: SizingOutput,
         capex: CapexBreakdownOutput,
         opex: OpexBreakdownOutput,
         revenue: RevenueStreamsOutput,
         gp,
+        tech_specs,
     ) -> List[SensitivityScenario]:
-        """Generate a few simple sensitivity scenarios.
+        """Generate sensitivity scenarios for key parameters."""
+        scenarios = []
 
-        Scenarios include ±10% changes to the discount rate, overall
-        capex and electrolyzer cost.
-        """
-        scenarios: List[SensitivityScenario] = []
+        # Base case
+        base_fin = cls._calculate_financial_metrics(capex, opex, revenue, gp, tech_specs)
+        scenarios.append(SensitivityScenario(description="Base Case", financial_metrics=base_fin))
 
-        base_fin = cls._calculate_financial_metrics(capex, opex, revenue, gp, input_data)
-        scenarios.append(SensitivityScenario(description="base", financial_metrics=base_fin))
-
-        # discount rate ±10%
-        for factor in (0.9, 1.1):
-            gp_mod = gp.model_copy(update={"discount_rate_percent": gp.discount_rate_percent * factor})
-            fin = cls._calculate_financial_metrics(capex, opex, revenue, gp_mod, input_data)
+        # Discount rate ±10%
+        for factor in [0.9, 1.1]:
+            gp_mod = gp.model_copy(
+                update={"discount_rate_percent": gp.discount_rate_percent * factor}
+            )
+            fin = cls._calculate_financial_metrics(capex, opex, revenue, gp_mod, tech_specs)
             scenarios.append(
                 SensitivityScenario(
-                    description=f"discount_rate_{int((factor-1)*100)}%",
+                    description=f"Discount Rate {int((factor - 1) * 100):+d}%",
                     financial_metrics=fin,
                 )
             )
 
-        # overall capex ±10%
-        for factor in (0.9, 1.1):
-            capex_mod = cls._calculate_capex(input_data, sizing, {"pv": factor, "battery": factor, "electrolyzer": factor, "h2_storage": factor, "fuel_cell": factor})
-            fin = cls._calculate_financial_metrics(capex_mod, opex, revenue, gp, input_data)
+        # H2 price ±20%
+        for factor in [0.8, 1.2]:
+            gp_mod = gp.model_copy(update={"h2_price_usd_per_kg": gp.h2_price_usd_per_kg * factor})
+            revenue_mod = cls._calculate_revenue(sizing, gp_mod, tech_specs)
+            fin = cls._calculate_financial_metrics(capex, opex, revenue_mod, gp, tech_specs)
             scenarios.append(
                 SensitivityScenario(
-                    description=f"capex_{int((factor-1)*100)}%",
+                    description=f"H2 Price {int((factor - 1) * 100):+d}%",
                     financial_metrics=fin,
                 )
             )
 
-        # electrolyzer cost ±10%
-        for factor in (0.9, 1.1):
-            capex_mod = cls._calculate_capex(input_data, sizing, {"electrolyzer": factor})
-            fin = cls._calculate_financial_metrics(capex_mod, opex, revenue, gp, input_data)
+        # CAPEX ±15%
+        for factor in [0.85, 1.15]:
+            capex_mod = CapexBreakdownOutput(
+                pv_capex_usd=capex.pv_capex_usd * factor,
+                battery_capex_usd=capex.battery_capex_usd * factor,
+                electrolyzer_capex_usd=capex.electrolyzer_capex_usd * factor,
+                h2_storage_capex_usd=capex.h2_storage_capex_usd * factor,
+                fuel_cell_capex_usd=capex.fuel_cell_capex_usd * factor,
+                balance_of_plant_capex_usd=capex.balance_of_plant_capex_usd * factor,
+                total_capex_before_subsidy_usd=capex.total_capex_before_subsidy_usd * factor,
+                subsidy_usd=capex.subsidy_usd * factor,
+                total_capex_after_subsidy_usd=capex.total_capex_after_subsidy_usd * factor,
+            )
+            opex_mod = cls._calculate_opex(sizing, capex_mod)
+            fin = cls._calculate_financial_metrics(capex_mod, opex_mod, revenue, gp, tech_specs)
             scenarios.append(
                 SensitivityScenario(
-                    description=f"electrolyzer_cost_{int((factor-1)*100)}%",
+                    description=f"CAPEX {int((factor - 1) * 100):+d}%",
                     financial_metrics=fin,
                 )
             )

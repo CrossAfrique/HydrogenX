@@ -47,10 +47,6 @@ async def calculate_single_site(request: SingleSiteInput) -> SingleSiteOutput:
     try:
         logger.info(f"Calculating single site: {request.site_name}")
         
-        # Validate input
-        if request.battery_storage.reserve_soc_percent > 100:
-            raise ValueError("Reserve SOC cannot exceed 100%")
-        
         # Perform calculation using the new HydrogenCalculator
         result = HydrogenCalculator.calculate_single_site(request)
         
@@ -95,9 +91,18 @@ async def calculate_portfolio(request: PortfolioInput) -> PortfolioOutput:
     Raises:
         HTTPException: If calculation fails
     """
-    # portfolio calculations are not supported in phase 2
-    logger.warning("Portfolio endpoint hit but not implemented")
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Portfolio calculations will be available in a later phase"
-    )
+    try:
+        logger.info(f"Calculating portfolio: {request.portfolio_name} with {len(request.sites)} sites")
+        
+        # Perform portfolio calculation using HydrogenCalculator
+        result = HydrogenCalculator.calculate_portfolio(request)
+        
+        logger.info(f"Portfolio calculation completed for {request.portfolio_name}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Portfolio calculation error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred during portfolio calculation"
+        )
