@@ -28,7 +28,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this based on your frontend domain in production
+    allow_origins=["https://hydrogen-x-front-gv2unonei-crossafriques-projects.vercel.app"],  # Allow your Vercel frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
