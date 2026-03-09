@@ -38,6 +38,15 @@ app.add_middleware(
 app.include_router(health_router, tags=["health"])
 app.include_router(calculations_router, tags=["calculations"])
 
+# Startup event to log routes
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Registered routes:")
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            methods = ', '.join(route.methods)
+            logger.info(f"  {methods} {route.path}")
+
 # Global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):

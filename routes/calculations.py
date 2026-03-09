@@ -13,7 +13,7 @@ from services.calculations import HydrogenCalculator
 # portfolio imports (left for future use)
 from models.schemas import PortfolioInput, PortfolioOutput
 
-router = APIRouter(prefix="/api/v1", tags=["calculations"])
+router = APIRouter(prefix="", tags=["calculations"])
 logger = logging.getLogger(__name__)
 
 
