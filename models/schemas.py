@@ -10,84 +10,111 @@ from datetime import datetime
 
 # ================== LOAD-CENTRIC INPUT MODELS ==================
 
-class TechSpecificationsInput(BaseModel):
-    """Technical specifications for all components"""
-    # Battery specifications
-    battery_usable_ratio: float = Field(default=0.8, ge=0.5, le=1.0,
-                                       description="Usable capacity ratio (accounting for reserve SOC)")
-    battery_power_rating_kw: float = Field(default=10.0, gt=0,
-                                          description="Battery discharge power rating in kW")
-    battery_efficiency_percent: float = Field(default=92, ge=80, le=99,
-                                             description="Battery round-trip efficiency in %")
-    
-    # Hydrogen specifications
-    electrolyzer_efficiency_percent: float = Field(default=75, ge=60, le=85,
-                                                  description="Electrolyzer electrical efficiency in %")
-    electrolyzer_heat_recovery_percent: float = Field(default=30, ge=0, le=50,
-                                                     description="Heat recovery from electrolyzer in %")
-    fuel_cell_efficiency_percent: float = Field(default=60, ge=40, le=75,
-                                               description="Fuel cell electrical efficiency in %")
-    h2_storage_pressure_bar: float = Field(default=350, ge=100, le=700,
-                                          description="H2 storage pressure in bar")
-    
-    # PV/Energy specifications
-    pv_performance_ratio: float = Field(default=0.85, ge=0.75, le=0.95,
-                                       description="PV system performance ratio")
-    peak_sun_hours_per_day: float = Field(default=4.5, ge=2.0, le=7.0,
-                                         description="Peak sun hours per day for location")
+class LoadAutonomyInput(BaseModel):
+    """Project Load & Autonomy parameters"""
+    daily_load_kwh: float = Field(default=192.0, gt=0,
+                                 description="Daily Load (kWh/day)")
+    battery_autonomy_hours: float = Field(default=12.0, gt=0,
+                                         description="Battery Autonomy (hours)")
+    hydrogen_autonomy_hours: float = Field(default=5.0, ge=0,
+                                          description="Hydrogen Autonomy (hours)")
+    electrolyzer_charge_window_hours: float = Field(default=5.0, gt=0,
+                                                   description="Electrolyzer Charge Window (hours)")
 
 
-class GlobalParametersInput(BaseModel):
-    """Global financial and operational parameters"""
-    discount_rate_percent: float = Field(default=8, ge=0, le=30,
-                                        description="Discount rate in %")
-    inflation_percent: float = Field(default=2.5, ge=0, le=10,
-                                    description="Annual inflation rate in %")
-    subsidy_percent: float = Field(default=0, ge=0, le=100,
-                                  description="CAPEX subsidy in % of total CAPEX")
-    
-    # Pricing for revenue streams
-    electricity_price_usd_per_kwh: float = Field(default=0.12, gt=0,
-                                                description="Grid electricity price in USD/kWh")
-    h2_price_usd_per_kg: float = Field(default=3.0, gt=0,
-                                      description="Hydrogen selling price in USD/kg")
-    heat_price_usd_per_kwh: float = Field(default=0.08, gt=0,
-                                         description="Heat selling price in USD/kWh (from electrolyzer)")
-    oxygen_price_usd_per_kg: float = Field(default=0.1, gt=0,
-                                          description="Oxygen byproduct price in USD/kg")
-    
-    # Operational parameters
-    project_lifetime_years: int = Field(default=25, ge=10, le=50,
-                                       description="Project lifetime in years")
-    operation_days_per_year: int = Field(default=330, ge=200, le=365,
-                                        description="Annual operating days (excluding maintenance)")
+class EfficienciesConstantsInput(BaseModel):
+    """Efficiencies & Constants parameters"""
+    battery_dod_percent: float = Field(default=80.0, ge=0, le=100,
+                                      description="Battery DoD (%)")
+    battery_efficiency_percent: float = Field(default=90.0, ge=80, le=99,
+                                             description="Battery Efficiency (%)")
+    fuel_cell_efficiency_percent: float = Field(default=50.0, ge=40, le=75,
+                                               description="Fuel Cell Efficiency (%)")
+    electrolyzer_efficiency_percent: float = Field(default=70.0, ge=60, le=85,
+                                                  description="Electrolyzer Efficiency (%)")
+    hydrogen_lhv_kwh_per_kg: float = Field(default=33.3, gt=0,
+                                          description="Hydrogen LHV (kWh/kg)")
+    pv_efficiency_factor: float = Field(default=1.2, gt=0,
+                                       description="PV Efficiency Factor")
+    jan_average_psh: float = Field(default=5.1, ge=0,
+                                  description="Jan Average PSH")
+    august_average_psh: float = Field(default=3.3, ge=0,
+                                     description="August Average PSH")
+
+
+class SizingSafetyFactorsInput(BaseModel):
+    """Sizing Safety Factors parameters"""
+    pv_oversizing_factor: float = Field(default=1.2, gt=0,
+                                       description="Oversizing Factor for PV")
+    safety_margin_general: float = Field(default=1.1, gt=0,
+                                        description="Safety Margin (general)")
+
+
+class FinancialAssumptionsInput(BaseModel):
+    """Financial Assumptions parameters"""
+    discount_rate_percent: float = Field(default=10.0, ge=0, le=30,
+                                        description="Discount Rate (%)")
+    system_lifetime_years: float = Field(default=15.0, ge=10, le=50,
+                                        description="System Lifetime (years)")
+    eaas_contract_years: float = Field(default=10.0, gt=0,
+                                      description="EaaS Contract (years)")
+    capex_subsidy_percent: float = Field(default=30.0, ge=0, le=100,
+                                        description="CAPEX Subsidy (%)")
+    opex_rate_pv_battery_percent: float = Field(default=2.0, ge=0,
+                                               description="OPEX Rate PV/Battery (%)")
+    opex_rate_electrolyzer_fc_percent: float = Field(default=3.0, ge=0,
+                                                    description="OPEX Rate Electrolyzer/Fuel Cell (%)")
+    opex_inflation_percent: float = Field(default=2.0, ge=0, le=10,
+                                         description="OPEX Inflation (%)")
+    revenue_growth_percent: float = Field(default=2.0, ge=0,
+                                         description="Revenue Growth (%)")
+    diesel_lcoe_usd_per_kwh: float = Field(default=0.356, gt=0,
+                                          description="Diesel LCOE ($/kWh)")
+    eaas_price_usd_per_kwh: float = Field(default=0.267, gt=0,
+                                         description="EaaS Price ($/kWh)")
+    units_deployed: int = Field(default=1, gt=0,
+                               description="Units Deployed")
+
+
+class CostParametersInput(BaseModel):
+    """Cost Parameters"""
+    solar_pv_cost_usd_per_kwp: float = Field(default=650.0, gt=0,
+                                            description="Solar PV Cost ($/kWp)")
+    battery_cost_usd_per_kwh: float = Field(default=250.0, gt=0,
+                                           description="Battery Cost ($/kWh)")
+    fuel_cell_cost_usd_per_kw: float = Field(default=1000.0, gt=0,
+                                            description="Fuel Cell Cost ($/kW)")
+    electrolyzer_cost_usd_per_kw: float = Field(default=800.0, gt=0,
+                                               description="Electrolyzer Cost ($/kW)")
+    oxygen_production_ratio_kg_per_kg: float = Field(default=8.0, gt=0,
+                                                    description="Oxygen Production Ratio (kg O2/kg H2)")
+    oxygen_price_usd_per_kg: float = Field(default=0.3, gt=0,
+                                          description="Oxygen Price ($/kg)")
+    area_m2: float = Field(default=6.0, gt=0,
+                          description="Area (M^2)")
 
 
 class SingleSiteInput(BaseModel):
     """Single site calculation input - LOAD-CENTRIC ARCHITECTURE
     
     All other sizing derives from these three primary inputs:
-    1. daily_load_kw: The facility's average daily load requirement
+    1. daily_load_kwh: The facility's average daily load requirement
     2. battery_autonomy_hours: Hours of battery-only operation during outages
     3. hydrogen_autonomy_hours: Hours of additional H2 fuel cell operation
     """
     site_name: Optional[str] = Field(default="Site 1", description="Site name")
     
     # ===== PRIMARY DRIVERS (everything else derives from these) =====
-    daily_load_kw: float = Field(..., gt=0,
-                                description="Daily average load requirement in kW")
-    battery_autonomy_hours: float = Field(..., gt=0,
-                                         description="Hours of battery-only autonomy required")
-    hydrogen_autonomy_hours: float = Field(..., ge=0,
-                                          description="Additional hours of H2 fuel cell autonomy")
-    
-    # Technical specifications (with sensible defaults)
-    tech_specs: TechSpecificationsInput = Field(default_factory=TechSpecificationsInput,
-                                               description="Technical specifications for all components")
-    
-    # Global financial and operational parameters
-    global_params: GlobalParametersInput = Field(default_factory=GlobalParametersInput,
-                                               description="Global financial parameters")
+    load_autonomy: LoadAutonomyInput = Field(default_factory=LoadAutonomyInput,
+                                             description="Project Load & Autonomy parameters")
+    efficiencies_constants: EfficienciesConstantsInput = Field(default_factory=EfficienciesConstantsInput,
+                                                               description="Efficiencies & Constants parameters")
+    sizing_safety_factors: SizingSafetyFactorsInput = Field(default_factory=SizingSafetyFactorsInput,
+                                                           description="Sizing Safety Factors parameters")
+    financial_assumptions: FinancialAssumptionsInput = Field(default_factory=FinancialAssumptionsInput,
+                                                            description="Financial Assumptions parameters")
+    cost_parameters: CostParametersInput = Field(default_factory=CostParametersInput,
+                                                 description="Cost Parameters")
 
 
 class PortfolioInput(BaseModel):

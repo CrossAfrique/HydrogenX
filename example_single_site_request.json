@@ -1,27 +1,45 @@
 {
   "site_name": "HydrogenX Demo Site - Load Centric",
-  "daily_load_kw": 200.0,
-  "battery_autonomy_hours": 4.0,
-  "hydrogen_autonomy_hours": 24.0,
-  "tech_specs": {
-    "battery_usable_ratio": 0.8,
-    "battery_efficiency_percent": 92,
-    "electrolyzer_efficiency_percent": 75,
-    "electrolyzer_heat_recovery_percent": 30,
-    "fuel_cell_efficiency_percent": 60,
-    "h2_storage_pressure_bar": 350,
-    "pv_performance_ratio": 0.85,
-    "peak_sun_hours_per_day": 4.5
+  "load_autonomy": {
+    "daily_load_kwh": 192.0,
+    "battery_autonomy_hours": 12.0,
+    "hydrogen_autonomy_hours": 5.0,
+    "electrolyzer_charge_window_hours": 5.0
   },
-  "global_params": {
-    "discount_rate_percent": 8.0,
-    "inflation_percent": 2.5,
-    "subsidy_percent": 15.0,
-    "electricity_price_usd_per_kwh": 0.12,
-    "h2_price_usd_per_kg": 3.5,
-    "heat_price_usd_per_kwh": 0.09,
-    "oxygen_price_usd_per_kg": 0.12,
-    "project_lifetime_years": 25,
-    "operation_days_per_year": 330
+  "efficiencies_constants": {
+    "battery_dod_percent": 80.0,
+    "battery_efficiency_percent": 90.0,
+    "fuel_cell_efficiency_percent": 50.0,
+    "electrolyzer_efficiency_percent": 70.0,
+    "hydrogen_lhv_kwh_per_kg": 33.3,
+    "pv_efficiency_factor": 1.2,
+    "jan_average_psh": 5.1,
+    "august_average_psh": 3.3
+  },
+  "sizing_safety_factors": {
+    "pv_oversizing_factor": 1.2,
+    "safety_margin_general": 1.1
+  },
+  "financial_assumptions": {
+    "discount_rate_percent": 10.0,
+    "system_lifetime_years": 15.0,
+    "eaas_contract_years": 10.0,
+    "capex_subsidy_percent": 30.0,
+    "opex_rate_pv_battery_percent": 2.0,
+    "opex_rate_electrolyzer_fc_percent": 3.0,
+    "opex_inflation_percent": 2.0,
+    "revenue_growth_percent": 2.0,
+    "diesel_lcoe_usd_per_kwh": 0.356,
+    "eaas_price_usd_per_kwh": 0.267,
+    "units_deployed": 1
+  },
+  "cost_parameters": {
+    "solar_pv_cost_usd_per_kwp": 650.0,
+    "battery_cost_usd_per_kwh": 250.0,
+    "fuel_cell_cost_usd_per_kw": 1000.0,
+    "electrolyzer_cost_usd_per_kw": 800.0,
+    "oxygen_production_ratio_kg_per_kg": 8.0,
+    "oxygen_price_usd_per_kg": 0.3,
+    "area_m2": 6.0
   }
 }
