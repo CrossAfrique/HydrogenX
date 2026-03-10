@@ -28,7 +28,11 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://hydrogen-x-front-gv2unonei-crossafriques-projects.vercel.app"],  # Allow your Vercel frontend
+    allow_origins=[
+        "https://hydrogen-x-front-end.vercel.app",  # Your Vercel frontend
+        "http://localhost:3000",  # For local development/testing
+        # Add more specific origins if needed, or "*" for global (less secure)
+    ],  # Allow your Vercel frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
