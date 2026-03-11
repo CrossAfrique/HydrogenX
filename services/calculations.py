@@ -58,8 +58,12 @@ class HydrogenCalculator:
         fa = input_data.financial_assumptions
         cp = input_data.cost_parameters
 
-        # Convert daily load from kWh/day to kW
-        daily_load_kw = la.daily_load_kwh / 24
+        # Use site_load_kwh directly if provided, otherwise convert from daily_load_kwh
+        if la.site_load_kwh is not None:
+            daily_load_kw = la.site_load_kwh
+        else:
+            # Convert daily load from kWh/day to kW
+            daily_load_kw = la.daily_load_kwh / 24
 
         # === STEP 1: SIZING ===
         sizing = cls._calculate_sizing_from_load(
@@ -82,7 +86,7 @@ class HydrogenCalculator:
         revenue = cls._calculate_revenue(sizing, ec, fa, cp)
 
         # === STEP 5: FINANCIAL METRICS ===
-        financial = cls._calculate_financial_metrics(capex, opex, revenue, fa, ec)
+        financial = cls._calculate_financial_metrics(capex, opex, revenue, fa, ec, sizing)
 
         # === STEP 6: MONTHLY DATA ===
         monthly = cls._calculate_monthly_data(sizing, revenue, opex, fa)
@@ -373,6 +377,7 @@ class HydrogenCalculator:
         revenue: RevenueStreamsOutput,
         financial_assumptions,
         efficiencies_constants,
+        sizing: SizingOutput,
     ) -> FinancialMetricsOutput:
         """Calculate key financial metrics with inflation and discounting."""
         inv = capex.total_capex_after_subsidy_usd
@@ -400,12 +405,14 @@ class HydrogenCalculator:
 
         # LCOE and LCOH
         avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-        annual_electricity = 365 * avg_psh * 1  # Simplified
-        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity, discount, life)
         
-        h2_price = 3.0  # placeholder
-        annual_h2 = annual_ebitda / h2_price if h2_price > 0 else 0
-        lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2, discount, life)
+        # Annual electricity production from PV (kWh/year)
+        annual_electricity_kwh = sizing.pv_capacity_kwp * avg_psh * 365
+        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity_kwh, discount, life)
+        
+        # Annual hydrogen production (kg/year)
+        annual_h2_kg = sizing.h2_daily_production_kg * 365
+        lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2_kg, discount, life)
 
         return FinancialMetricsOutput(
             lcoe_usd_per_kwh=lcoe,
