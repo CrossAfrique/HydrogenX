@@ -311,58 +311,6 @@ class HydrogenCalculator:
         )
     #==== Financial metrics calculations (NPV, IRR, Payback, LCOE, LCOH) with inflation and discounting ====#
         
-    @classmethod
-    def _calculate_financial_metrics(
-        cls,
-        capex: CapexBreakdownOutput,
-        opex: OpexBreakdownOutput,
-        revenue: RevenueStreamsOutput,
-        financial_assumptions,
-        efficiencies_constants,
-        sizing: SizingOutput,
-    ) -> FinancialMetricsOutput:
-        """Exact Excel match + revenue growth over EaaS contract years + EBITDA."""
-
-        inv = capex.total_capex_after_subsidy_usd
-        annual_ebitda_base = revenue.total_revenue_usd_per_year - opex.total_opex_usd_per_year
-
-        discount = financial_assumptions.discount_rate_percent / 100
-        life = int(financial_assumptions.system_lifetime_years)
-        contract_years = int(financial_assumptions.eaas_contract_years)   # usually 10
-        rev_growth = financial_assumptions.revenue_growth_percent / 100
-        opex_inflation = financial_assumptions.opex_inflation_percent / 100
-
-        # Build cash flows: revenue grows for first 10 years, then flat
-        cash_flows = [-inv]
-        for yr in range(1, life + 1):
-            rev = revenue.total_revenue_usd_per_year * ((1 + rev_growth) ** min(yr - 1, contract_years - 1))
-            opex_yr = opex.total_opex_usd_per_year * ((1 + opex_inflation) ** (yr - 1))
-            cf = rev - opex_yr
-            cash_flows.append(cf)
-
-        npv = cls._calculate_npv(cash_flows, discount)
-        irr = cls._calculate_irr(cash_flows) * 100
-        payback = cls._calculate_payback_period(inv, annual_ebitda_base)
-
-        # LCOE & LCOH (unchanged from previous correct version)
-        annual_energy_kwh = sizing.daily_consumption_kwh * 365
-        lcoe = cls._calculate_lcoe(inv, opex.total_opex_usd_per_year, annual_energy_kwh, discount, life)
-
-        annual_h2_kg = sizing.h2_daily_production_kg * 365
-        lcoh = cls._calculate_lcoh(inv, opex.total_opex_usd_per_year, annual_h2_kg, discount, life)
-
-        return FinancialMetricsOutput(
-            lcoe_usd_per_kwh=lcoe,
-            lcoh_usd_per_kg=lcoh,
-            irr_percent=irr,
-            npv_usd=npv,
-            payback_period_years=payback,
-            ebitda_usd_per_year=annual_ebitda_base,   # base EBITDA (before growth)
-        )
-
-
-    # ========== FINANCIAL METRICS ==========
-
     # @classmethod
     # def _calculate_financial_metrics(
     #     cls,
@@ -373,108 +321,124 @@ class HydrogenCalculator:
     #     efficiencies_constants,
     #     sizing: SizingOutput,
     # ) -> FinancialMetricsOutput:
-    #     """Calculate key financial metrics with inflation and discounting."""
-    #     inv = capex.total_capex_after_subsidy_usd
-    #     annual_revenue = revenue.total_revenue_usd_per_year
-    #     annual_opex = opex.total_opex_usd_per_year
-    #     annual_ebitda = annual_revenue - annual_opex
+        # """Exact Excel match + revenue growth over EaaS contract years + EBITDA."""
 
-    #     discount = financial_assumptions.discount_rate_percent / 100
-    #     life = int(financial_assumptions.system_lifetime_years)
-    #     inflation = financial_assumptions.opex_inflation_percent / 100
+       
 
-    #     # Build cash flows with inflation
-    #     cash_flows = [-inv]
-    #     for yr in range(1, life + 1):
-    #         # Inflate EBITDA for future years
-    #         cf = annual_ebitda * ((1 + inflation) ** (yr - 1))
-    #         cash_flows.append(cf)
+    # ========== FINANCIAL METRICS ==========
 
-    #     # Calculate NPV and IRR
-    #     npv = cls._calculate_npv(cash_flows, discount)
-    #     irr = cls._calculate_irr(cash_flows) * 100
+    @classmethod
+    def _calculate_financial_metrics(
+        cls,
+        capex: CapexBreakdownOutput,
+        opex: OpexBreakdownOutput,
+        revenue: RevenueStreamsOutput,
+        financial_assumptions,
+        efficiencies_constants,
+        sizing: SizingOutput,
+    ) -> FinancialMetricsOutput:
+        """Calculate key financial metrics with inflation and discounting."""
+        inv = capex.total_capex_after_subsidy_usd
+        annual_revenue = revenue.total_revenue_usd_per_year
+        annual_opex = opex.total_opex_usd_per_year
+        annual_ebitda = annual_revenue - annual_opex
 
-    #     # Payback period (simple, without discounting)
-    #     payback = cls._calculate_payback_period(inv, annual_ebitda) if annual_ebitda > 0 else float("inf")
+        discount = financial_assumptions.discount_rate_percent / 100
+        life = int(financial_assumptions.system_lifetime_years)
+        inflation = financial_assumptions.opex_inflation_percent / 100
 
-    #     # LCOE and LCOH
-    #     avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
+        # Build cash flows with inflation
+        cash_flows = [-inv]
+        for yr in range(1, life + 1):
+            # Inflate EBITDA for future years
+            cf = annual_ebitda * ((1 + inflation) ** (yr - 1))
+            cash_flows.append(cf)
+
+        # Calculate NPV and IRR
+        npv = cls._calculate_npv(cash_flows, discount)
+        irr = cls._calculate_irr(cash_flows) * 100
+
+        # Payback period (simple, without discounting)
+        payback = cls._calculate_payback_period(inv, annual_ebitda) if annual_ebitda > 0 else float("inf")
+
+        # LCOE and LCOH
+        avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
         
-    #     # Annual electricity production from PV (kWh/year)
-    #     annual_electricity_kwh = sizing.pv_capacity_kwp * avg_psh * 365
-    #     lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity_kwh, discount, life)
+        # Annual electricity production from PV (kWh/year)
+        annual_electricity_kwh = sizing.pv_capacity_kwp * avg_psh * 365
+        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity_kwh, discount, life)
         
-    #     # Annual hydrogen production (kg/year)
-    #     annual_h2_kg = sizing.h2_daily_production_kg * 365
-    #     lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2_kg, discount, life)
+        # Annual hydrogen production (kg/year)
+        annual_h2_kg = sizing.h2_daily_production_kg * 365
+        lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2_kg, discount, life)
 
-    #     return FinancialMetricsOutput(
-    #         lcoe_usd_per_kwh=lcoe,
-    #         lcoh_usd_per_kg=lcoh,
-    #         irr_percent=irr,
-    #         npv_usd=npv,
-    #         payback_period_years=payback,
-    #         ebitda_usd_per_year=annual_ebitda,
-    #     )
+        return FinancialMetricsOutput(
+            lcoe_usd_per_kwh=lcoe,
+            lcoh_usd_per_kg=lcoh,
+            irr_percent=irr,
+            npv_usd=npv,
+            payback_period_years=payback,
+            ebitda_usd_per_year=annual_ebitda,
+        )
 
 
-    # @staticmethod
-    # def _calculate_npv(cash_flows: List[float], discount_rate: float) -> float:
-    #     """Calculate NPV given cash flows and discount rate."""
-    #     return sum(cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows))
+    @staticmethod
+    def _calculate_npv(cash_flows: List[float], discount_rate: float) -> float:
+        """Calculate NPV given cash flows and discount rate."""
+        return sum(cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows))
 
-    # @staticmethod
-    # def _calculate_irr(cash_flows: List[float], guess: float = 0.1, iterations: int = 1000) -> float:
-    #     """Calculate IRR using Newton-Raphson method."""
-    #     rate = guess
-    #     for _ in range(iterations):
-    #         npv = sum(cf / ((1 + rate) ** t) for t, cf in enumerate(cash_flows))
-    #         d_npv = sum(-t * cf / ((1 + rate) ** (t + 1)) for t, cf in enumerate(cash_flows))
-    #         if abs(d_npv) < 1e-6:
-    #             break
-    #         rate -= npv / d_npv
-    #     return max(-0.99, rate)
+    @staticmethod
+    def _calculate_irr(cash_flows: List[float], guess: float = 0.1, iterations: int = 1000) -> float:
+        """Calculate IRR using Newton-Raphson method."""
+        rate = guess
+        for _ in range(iterations):
+            npv = sum(cf / ((1 + rate) ** t) for t, cf in enumerate(cash_flows))
+            d_npv = sum(-t * cf / ((1 + rate) ** (t + 1)) for t, cf in enumerate(cash_flows))
+            if abs(d_npv) < 1e-6:
+                break
+            rate -= npv / d_npv
+        return max(-0.99, rate)
 
-    # @staticmethod
-    # def _calculate_payback_period(investment: float, annual_cash_flow: float) -> float:
-    #     """Simple payback period calculation."""
-    #     return investment / annual_cash_flow if annual_cash_flow > 0 else float("inf")
+    @staticmethod
+    def _calculate_payback_period(investment: float, annual_cash_flow: float) -> float:
+        """Simple payback period calculation."""
+        return investment / annual_cash_flow if annual_cash_flow > 0 else float("inf")
 
-    # @staticmethod
-    # def _calculate_lcoe(
-    #     investment: float,
-    #     annual_opex: float,
-    #     annual_energy_kwh: float,
-    #     discount_rate: float,
-    #     project_life: int,
-    # ) -> float:
-    #     """Levelized Cost of Energy."""
-    #     if annual_energy_kwh <= 0:
-    #         return 0
-    #     dr = discount_rate
-    #     if dr > 0:
-    #         annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
-    #     else:
-    #         annuity = 1 / project_life
-    #     return (investment * annuity + annual_opex) / annual_energy_kwh
+    @staticmethod
+    def _calculate_lcoe(
+        investment: float,
+        annual_opex: float,
+        annual_energy_kwh: float,
+        discount_rate: float,
+        project_life: int,
+    ) -> float:
+        """Levelized Cost of Energy."""
+        if annual_energy_kwh <= 0:
+            return 0
+        dr = discount_rate
+        if dr > 0:
+            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+        else:
+            annuity = 1 / project_life
+        return (investment * annuity + annual_opex) / annual_energy_kwh
 
-    # @staticmethod
-    # def _calculate_lcoh(
-    #     investment: float,
-    #     annual_opex: float,
-    #     annual_h2_kg: float,
-    #     discount_rate: float,
-    #     project_life: int,
-    # ) -> float:
-    #     """Levelized Cost of Hydrogen."""
-    #     if annual_h2_kg <= 0:
-    #         return 0
-    #     dr = discount_rate
-    #     if dr > 0:
-    #         annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
-    #     else:
-    #         annuity = 1 / project_life
-    #     return (investment * annuity + annual_opex) / annual_h2_kg
+    @staticmethod
+    def _calculate_lcoh(
+        investment: float,
+        annual_opex: float,
+        annual_h2_kg: float,
+        discount_rate: float,
+        project_life: int,
+    ) -> float:
+        """Levelized Cost of Hydrogen."""
+        if annual_h2_kg <= 0:
+            return 0
+        dr = discount_rate
+        if dr > 0:
+            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+        else:
+            annuity = 1 / project_life
+        return (investment * annuity + annual_opex) / annual_h2_kg
 
 
     # ========== MONTHLY DATA FOR CHARTING ==========
