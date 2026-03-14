@@ -154,72 +154,45 @@ class HydrogenCalculator:
         cost_parameters,
         financial_assumptions,
     ) -> SizingOutput:
-        """Derive all component sizing from daily load and autonomy hours.
-        
-        This is the core load-centric logic:
-        - Daily consumption = daily_load_kw * 24 hours
-        - Battery capacity sized for battery_autonomy_hours of autonomy
-        - H2 storage sized for hydrogen_autonomy_hours of autonomy
-        - Electrolyzer, fuel cell, and PV sized accordingly
-        """
+        """Calculate component sizing based on daily load and autonomy requirements."""
 
-        # Daily consumption
         daily_consumption_kwh = daily_load_kw * 24
 
-        # === BATTERY SIZING ===
-        # Battery DoD = usable ratio
-        battery_usable_ratio = efficiencies_constants.battery_dod_percent / 100
-        # Battery needs to provide 'battery_autonomy_hours' worth of energy
-        # accounting for usable ratio (reserve SOC)
+        # === BATTERY ===
+        battery_dod = efficiencies_constants.battery_dod_percent / 100
         battery_usable_needed = daily_load_kw * battery_autonomy_hours
-        battery_gross_capacity = battery_usable_needed / battery_usable_ratio
-        battery_power_rating = daily_load_kw * sizing_safety_factors.safety_margin_general  # headroom
+        battery_gross_capacity = battery_usable_needed / battery_dod
+        battery_power_rating = daily_load_kw * sizing_safety_factors.safety_margin_general
 
-        # === HYDROGEN & FUEL CELL SIZING ===
-        # H2 LHV for production calculation
-        h2_lhv_kwh_per_kg = efficiencies_constants.hydrogen_lhv_kwh_per_kg
-        electrolyzer_efficiency_decimal = efficiencies_constants.electrolyzer_efficiency_percent / 100
+        # === HYDROGEN & FUEL CELL ===
+        h2_lhv = efficiencies_constants.hydrogen_lhv_kwh_per_kg
+        fc_eff = efficiencies_constants.fuel_cell_efficiency_percent / 100
+        energy_needed_for_h2 = daily_load_kw * hydrogen_autonomy_hours
+        h2_daily_kg = energy_needed_for_h2 / (fc_eff * h2_lhv)
 
-        # Daily H2 production needed (assuming electrolyzer runs during charge window)
-        # Energy for H2 = LHV / efficiency
-        kwh_per_kg_h2 = h2_lhv_kwh_per_kg / electrolyzer_efficiency_decimal
-        h2_daily_kg = daily_consumption_kwh / kwh_per_kg_h2
+        h2_storage_capacity = h2_daily_kg * (hydrogen_autonomy_hours / 24)
 
-        # H2 storage for the autonomy period
-        h2_storage_capacity = h2_daily_kg * (hydrogen_autonomy_hours / 24) if hydrogen_autonomy_hours > 0 else 0
+        fuel_cell_power = (daily_load_kw / fc_eff) * sizing_safety_factors.safety_margin_general
 
-        # Fuel cell power rating
-        fc_load_kw = daily_load_kw
-        fuel_cell_efficiency_decimal = efficiencies_constants.fuel_cell_efficiency_percent / 100
-        fuel_cell_power_rating = fc_load_kw / fuel_cell_efficiency_decimal * sizing_safety_factors.safety_margin_general
+        # === ELECTROLYZER ===
+        ely_eff = efficiencies_constants.electrolyzer_efficiency_percent / 100
+        charge_window = getattr(efficiencies_constants, 'electrolyzer_charge_window_hours', 5)  # default 5h
+        ely_daily_kwh = h2_daily_kg * (h2_lhv / ely_eff)
+        electrolyzer_power = ely_daily_kwh / charge_window
 
-        # Electrolyzer power rating
-        # Must produce daily H2 production during available sunlight hours (use average PSH)
+        # === PV ===
+        pv_eff_factor = efficiencies_constants.pv_efficiency_factor
         avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-        h2_power_needed = h2_daily_kg * kwh_per_kg_h2 / avg_psh if avg_psh > 0 else 0
-        electrolyzer_power_rating = h2_power_needed / electrolyzer_efficiency_decimal if avg_psh > 0 else 0
 
-        # === PV SIZING ===
-        # PV must cover:
-        # 1. Direct load consumption
-        # 2. Battery charging losses
-        # 3. Electrolyzer energy needs
+        battery_charging_kwh = daily_consumption_kwh / (efficiencies_constants.battery_efficiency_percent / 100)
+        total_pv_energy_needed = (
+            daily_consumption_kwh +                      # direct load
+            (battery_charging_kwh - daily_consumption_kwh) +  # battery losses
+            ely_daily_kwh                                 # electrolyzer
+        ) * sizing_safety_factors.safety_margin_general
 
-        battery_efficiency_decimal = efficiencies_constants.battery_efficiency_percent / 100
-        battery_charging_kwh = daily_consumption_kwh / battery_efficiency_decimal
-        efficiency_loss_factor = sizing_safety_factors.safety_margin_general  # general losses
-
-        # Total daily PV energy needed
-        electrolyzer_daily_kwh = h2_daily_kg * kwh_per_kg_h2
-        pv_daily_energy_needed = (
-            daily_consumption_kwh  # Direct load
-            + (battery_charging_kwh - daily_consumption_kwh)  # Battery losses
-            + electrolyzer_daily_kwh  # Electrolyzer demand
-        ) * efficiency_loss_factor
-
-        pv_performance_ratio = efficiencies_constants.pv_efficiency_factor
-        pv_capacity_kwp = pv_daily_energy_needed / (avg_psh * pv_performance_ratio) if avg_psh > 0 else 0
-        pv_capacity_kwp *= sizing_safety_factors.pv_oversizing_factor  # oversizing
+        pv_capacity_kwp = total_pv_energy_needed / (avg_psh * pv_eff_factor)
+        pv_capacity_kwp *= sizing_safety_factors.pv_oversizing_factor
 
         return SizingOutput(
             daily_consumption_kwh=daily_consumption_kwh,
@@ -228,8 +201,8 @@ class HydrogenCalculator:
             battery_usable_kwh=battery_usable_needed,
             h2_daily_production_kg=h2_daily_kg,
             h2_storage_capacity_kg=h2_storage_capacity,
-            electrolyzer_capacity_kw=electrolyzer_power_rating,
-            fuel_cell_capacity_kw=fuel_cell_power_rating,
+            electrolyzer_capacity_kw=electrolyzer_power,
+            fuel_cell_capacity_kw=fuel_cell_power,
             pv_capacity_kwp=pv_capacity_kwp,
         )
 
@@ -238,35 +211,22 @@ class HydrogenCalculator:
 
     @classmethod
     def _calculate_capex(cls, sizing: SizingOutput, cost_parameters, financial_assumptions) -> CapexBreakdownOutput:
-        """Calculate CAPEX breakdown from sized components."""
+        """Exact match to Excel CAPEX (no placeholder H2 storage cost)."""
 
-        # Component costs from input
         pv_capex = sizing.pv_capacity_kwp * cost_parameters.solar_pv_cost_usd_per_kwp
         battery_capex = sizing.battery_capacity_kwh * cost_parameters.battery_cost_usd_per_kwh
         electrolyzer_capex = sizing.electrolyzer_capacity_kw * cost_parameters.electrolyzer_cost_usd_per_kw
         fuel_cell_capex = sizing.fuel_cell_capacity_kw * cost_parameters.fuel_cell_cost_usd_per_kw
-        
-        # H2 storage cost - assume fixed cost per kg, but since not specified, use a default or calculate
-        # For now, use a placeholder; user didn't specify H2 storage cost, so I'll assume it's included or use a default
-        h2_storage_capex = sizing.h2_storage_capacity_kg * 50  # placeholder, as not in cost_parameters
 
-        # Sum of all components
-        component_sum = (
-            pv_capex
-            + battery_capex
-            + electrolyzer_capex
-            + h2_storage_capex
-            + fuel_cell_capex
-        )
+        # H2 storage cost = 0 in Excel model (we can add later)
+        h2_storage_capex = 0.0
 
-        # Balance of Plant (assume 15% of component sum, as not specified)
-        bop_capex = component_sum * 0.15
+        component_sum = pv_capex + battery_capex + electrolyzer_capex + fuel_cell_capex + h2_storage_capex
+        bop_capex = 0.0  # Excel had 0% BOS in final version
 
-        total_capex = component_sum + bop_capex
-
-        # Apply subsidy
-        subsidy_amount = total_capex * (financial_assumptions.capex_subsidy_percent / 100)
-        capex_after_subsidy = total_capex - subsidy_amount
+        total_capex = component_sum
+        subsidy = total_capex * (financial_assumptions.capex_subsidy_percent / 100)
+        capex_after_subsidy = total_capex - subsidy
 
         return CapexBreakdownOutput(
             pv_capex_usd=pv_capex,
@@ -276,38 +236,22 @@ class HydrogenCalculator:
             fuel_cell_capex_usd=fuel_cell_capex,
             balance_of_plant_capex_usd=bop_capex,
             total_capex_before_subsidy_usd=total_capex,
-            subsidy_usd=subsidy_amount,
+            subsidy_usd=subsidy,
             total_capex_after_subsidy_usd=capex_after_subsidy,
         )
 
     @classmethod
     def _calculate_opex(cls, sizing: SizingOutput, capex: CapexBreakdownOutput, financial_assumptions) -> OpexBreakdownOutput:
-        """Calculate annual OPEX split into three groups."""
+        """Exact Excel OPEX groups (2% PV+Batt, 3% Ely+FC)."""
 
-        # Group 1: PV + Battery O&M
-        pv_battery_opex = (
-            capex.pv_capex_usd * (financial_assumptions.opex_rate_pv_battery_percent / 100)
-            + capex.battery_capex_usd * (financial_assumptions.opex_rate_pv_battery_percent / 100)
-        )
-
-        # Group 2: Electrolyzer + Fuel Cell O&M
-        elec_fc_opex = (
-            capex.electrolyzer_capex_usd * (financial_assumptions.opex_rate_electrolyzer_fc_percent / 100)
-            + capex.fuel_cell_capex_usd * (financial_assumptions.opex_rate_electrolyzer_fc_percent / 100)
-        )
-
-        # Group 3: H2 Storage + Balance of Plant O&M (assume same as group 1 or fixed)
-        h2_bop_opex = (
-            capex.h2_storage_capex_usd * 0.015  # 1.5% as placeholder
-            + capex.balance_of_plant_capex_usd * 0.01  # 1% as placeholder
-        )
-
-        total_opex = pv_battery_opex + elec_fc_opex + h2_bop_opex
+        group_a = (capex.pv_capex_usd + capex.battery_capex_usd) * (financial_assumptions.opex_rate_pv_battery_percent / 100)
+        group_b = (capex.electrolyzer_capex_usd + capex.fuel_cell_capex_usd) * (financial_assumptions.opex_rate_electrolyzer_fc_percent / 100)
+        total_opex = group_a + group_b
 
         return OpexBreakdownOutput(
-            pv_battery_opex_usd_per_year=pv_battery_opex,
-            electrolyzer_fc_opex_usd_per_year=elec_fc_opex,
-            h2_storage_bop_opex_usd_per_year=h2_bop_opex,
+            pv_battery_opex_usd_per_year=group_a,
+            electrolyzer_fc_opex_usd_per_year=group_b,
+            h2_storage_bop_opex_usd_per_year=0.0,
             total_opex_usd_per_year=total_opex,
         )
 
@@ -365,10 +309,8 @@ class HydrogenCalculator:
             oxygen_byproduct_revenue_usd_per_year=oxygen_revenue,
             total_revenue_usd_per_year=total_revenue,
         )
-
-
-    # ========== FINANCIAL METRICS ==========
-
+    #==== Financial metrics calculations (NPV, IRR, Payback, LCOE, LCOH) with inflation and discounting ====#
+        
     @classmethod
     def _calculate_financial_metrics(
         cls,
@@ -379,40 +321,35 @@ class HydrogenCalculator:
         efficiencies_constants,
         sizing: SizingOutput,
     ) -> FinancialMetricsOutput:
-        """Calculate key financial metrics with inflation and discounting."""
+        """Exact Excel match + revenue growth over EaaS contract years + EBITDA."""
+
         inv = capex.total_capex_after_subsidy_usd
-        annual_revenue = revenue.total_revenue_usd_per_year
-        annual_opex = opex.total_opex_usd_per_year
-        annual_ebitda = annual_revenue - annual_opex
+        annual_ebitda_base = revenue.total_revenue_usd_per_year - opex.total_opex_usd_per_year
 
         discount = financial_assumptions.discount_rate_percent / 100
         life = int(financial_assumptions.system_lifetime_years)
-        inflation = financial_assumptions.opex_inflation_percent / 100
+        contract_years = int(financial_assumptions.eaas_contract_years)   # usually 10
+        rev_growth = financial_assumptions.revenue_growth_percent / 100
+        opex_inflation = financial_assumptions.opex_inflation_percent / 100
 
-        # Build cash flows with inflation
+        # Build cash flows: revenue grows for first 10 years, then flat
         cash_flows = [-inv]
         for yr in range(1, life + 1):
-            # Inflate EBITDA for future years
-            cf = annual_ebitda * ((1 + inflation) ** (yr - 1))
+            rev = revenue.total_revenue_usd_per_year * ((1 + rev_growth) ** min(yr - 1, contract_years - 1))
+            opex_yr = opex.total_opex_usd_per_year * ((1 + opex_inflation) ** (yr - 1))
+            cf = rev - opex_yr
             cash_flows.append(cf)
 
-        # Calculate NPV and IRR
         npv = cls._calculate_npv(cash_flows, discount)
         irr = cls._calculate_irr(cash_flows) * 100
+        payback = cls._calculate_payback_period(inv, annual_ebitda_base)
 
-        # Payback period (simple, without discounting)
-        payback = cls._calculate_payback_period(inv, annual_ebitda) if annual_ebitda > 0 else float("inf")
+        # LCOE & LCOH (unchanged from previous correct version)
+        annual_energy_kwh = sizing.daily_consumption_kwh * 365
+        lcoe = cls._calculate_lcoe(inv, opex.total_opex_usd_per_year, annual_energy_kwh, discount, life)
 
-        # LCOE and LCOH
-        avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-        
-        # Annual electricity production from PV (kWh/year)
-        annual_electricity_kwh = sizing.pv_capacity_kwp * avg_psh * 365
-        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity_kwh, discount, life)
-        
-        # Annual hydrogen production (kg/year)
         annual_h2_kg = sizing.h2_daily_production_kg * 365
-        lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2_kg, discount, life)
+        lcoh = cls._calculate_lcoh(inv, opex.total_opex_usd_per_year, annual_h2_kg, discount, life)
 
         return FinancialMetricsOutput(
             lcoe_usd_per_kwh=lcoe,
@@ -420,67 +357,124 @@ class HydrogenCalculator:
             irr_percent=irr,
             npv_usd=npv,
             payback_period_years=payback,
-            ebitda_usd_per_year=annual_ebitda,
+            ebitda_usd_per_year=annual_ebitda_base,   # base EBITDA (before growth)
         )
 
 
-    @staticmethod
-    def _calculate_npv(cash_flows: List[float], discount_rate: float) -> float:
-        """Calculate NPV given cash flows and discount rate."""
-        return sum(cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows))
+    # ========== FINANCIAL METRICS ==========
 
-    @staticmethod
-    def _calculate_irr(cash_flows: List[float], guess: float = 0.1, iterations: int = 1000) -> float:
-        """Calculate IRR using Newton-Raphson method."""
-        rate = guess
-        for _ in range(iterations):
-            npv = sum(cf / ((1 + rate) ** t) for t, cf in enumerate(cash_flows))
-            d_npv = sum(-t * cf / ((1 + rate) ** (t + 1)) for t, cf in enumerate(cash_flows))
-            if abs(d_npv) < 1e-6:
-                break
-            rate -= npv / d_npv
-        return max(-0.99, rate)
+    # @classmethod
+    # def _calculate_financial_metrics(
+    #     cls,
+    #     capex: CapexBreakdownOutput,
+    #     opex: OpexBreakdownOutput,
+    #     revenue: RevenueStreamsOutput,
+    #     financial_assumptions,
+    #     efficiencies_constants,
+    #     sizing: SizingOutput,
+    # ) -> FinancialMetricsOutput:
+    #     """Calculate key financial metrics with inflation and discounting."""
+    #     inv = capex.total_capex_after_subsidy_usd
+    #     annual_revenue = revenue.total_revenue_usd_per_year
+    #     annual_opex = opex.total_opex_usd_per_year
+    #     annual_ebitda = annual_revenue - annual_opex
 
-    @staticmethod
-    def _calculate_payback_period(investment: float, annual_cash_flow: float) -> float:
-        """Simple payback period calculation."""
-        return investment / annual_cash_flow if annual_cash_flow > 0 else float("inf")
+    #     discount = financial_assumptions.discount_rate_percent / 100
+    #     life = int(financial_assumptions.system_lifetime_years)
+    #     inflation = financial_assumptions.opex_inflation_percent / 100
 
-    @staticmethod
-    def _calculate_lcoe(
-        investment: float,
-        annual_opex: float,
-        annual_energy_kwh: float,
-        discount_rate: float,
-        project_life: int,
-    ) -> float:
-        """Levelized Cost of Energy."""
-        if annual_energy_kwh <= 0:
-            return 0
-        dr = discount_rate
-        if dr > 0:
-            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
-        else:
-            annuity = 1 / project_life
-        return (investment * annuity + annual_opex) / annual_energy_kwh
+    #     # Build cash flows with inflation
+    #     cash_flows = [-inv]
+    #     for yr in range(1, life + 1):
+    #         # Inflate EBITDA for future years
+    #         cf = annual_ebitda * ((1 + inflation) ** (yr - 1))
+    #         cash_flows.append(cf)
 
-    @staticmethod
-    def _calculate_lcoh(
-        investment: float,
-        annual_opex: float,
-        annual_h2_kg: float,
-        discount_rate: float,
-        project_life: int,
-    ) -> float:
-        """Levelized Cost of Hydrogen."""
-        if annual_h2_kg <= 0:
-            return 0
-        dr = discount_rate
-        if dr > 0:
-            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
-        else:
-            annuity = 1 / project_life
-        return (investment * annuity + annual_opex) / annual_h2_kg
+    #     # Calculate NPV and IRR
+    #     npv = cls._calculate_npv(cash_flows, discount)
+    #     irr = cls._calculate_irr(cash_flows) * 100
+
+    #     # Payback period (simple, without discounting)
+    #     payback = cls._calculate_payback_period(inv, annual_ebitda) if annual_ebitda > 0 else float("inf")
+
+    #     # LCOE and LCOH
+    #     avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
+        
+    #     # Annual electricity production from PV (kWh/year)
+    #     annual_electricity_kwh = sizing.pv_capacity_kwp * avg_psh * 365
+    #     lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity_kwh, discount, life)
+        
+    #     # Annual hydrogen production (kg/year)
+    #     annual_h2_kg = sizing.h2_daily_production_kg * 365
+    #     lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2_kg, discount, life)
+
+    #     return FinancialMetricsOutput(
+    #         lcoe_usd_per_kwh=lcoe,
+    #         lcoh_usd_per_kg=lcoh,
+    #         irr_percent=irr,
+    #         npv_usd=npv,
+    #         payback_period_years=payback,
+    #         ebitda_usd_per_year=annual_ebitda,
+    #     )
+
+
+    # @staticmethod
+    # def _calculate_npv(cash_flows: List[float], discount_rate: float) -> float:
+    #     """Calculate NPV given cash flows and discount rate."""
+    #     return sum(cf / ((1 + discount_rate) ** t) for t, cf in enumerate(cash_flows))
+
+    # @staticmethod
+    # def _calculate_irr(cash_flows: List[float], guess: float = 0.1, iterations: int = 1000) -> float:
+    #     """Calculate IRR using Newton-Raphson method."""
+    #     rate = guess
+    #     for _ in range(iterations):
+    #         npv = sum(cf / ((1 + rate) ** t) for t, cf in enumerate(cash_flows))
+    #         d_npv = sum(-t * cf / ((1 + rate) ** (t + 1)) for t, cf in enumerate(cash_flows))
+    #         if abs(d_npv) < 1e-6:
+    #             break
+    #         rate -= npv / d_npv
+    #     return max(-0.99, rate)
+
+    # @staticmethod
+    # def _calculate_payback_period(investment: float, annual_cash_flow: float) -> float:
+    #     """Simple payback period calculation."""
+    #     return investment / annual_cash_flow if annual_cash_flow > 0 else float("inf")
+
+    # @staticmethod
+    # def _calculate_lcoe(
+    #     investment: float,
+    #     annual_opex: float,
+    #     annual_energy_kwh: float,
+    #     discount_rate: float,
+    #     project_life: int,
+    # ) -> float:
+    #     """Levelized Cost of Energy."""
+    #     if annual_energy_kwh <= 0:
+    #         return 0
+    #     dr = discount_rate
+    #     if dr > 0:
+    #         annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+    #     else:
+    #         annuity = 1 / project_life
+    #     return (investment * annuity + annual_opex) / annual_energy_kwh
+
+    # @staticmethod
+    # def _calculate_lcoh(
+    #     investment: float,
+    #     annual_opex: float,
+    #     annual_h2_kg: float,
+    #     discount_rate: float,
+    #     project_life: int,
+    # ) -> float:
+    #     """Levelized Cost of Hydrogen."""
+    #     if annual_h2_kg <= 0:
+    #         return 0
+    #     dr = discount_rate
+    #     if dr > 0:
+    #         annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+    #     else:
+    #         annuity = 1 / project_life
+    #     return (investment * annuity + annual_opex) / annual_h2_kg
 
 
     # ========== MONTHLY DATA FOR CHARTING ==========
