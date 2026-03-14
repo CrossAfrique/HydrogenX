@@ -158,21 +158,21 @@ class HydrogenCalculator:
 
         daily_consumption_kwh = daily_load_kw * 24
 
-        # === BATTERY ===
+        # === BATTERY (matches 133 kWh gross) ===
         battery_dod = efficiencies_constants.battery_dod_percent / 100
+        battery_eff = efficiencies_constants.battery_efficiency_percent / 100
         battery_usable_needed = daily_load_kw * battery_autonomy_hours
-        battery_gross_capacity = battery_usable_needed / battery_dod
+        battery_gross_capacity = battery_usable_needed / (battery_dod * battery_eff)
         battery_power_rating = daily_load_kw * sizing_safety_factors.safety_margin_general
 
-        # === HYDROGEN & FUEL CELL ===
+       # === HYDROGEN & FUEL CELL (matches Fuel Cell = 8.8 kW) ===
         h2_lhv = efficiencies_constants.hydrogen_lhv_kwh_per_kg
         fc_eff = efficiencies_constants.fuel_cell_efficiency_percent / 100
-        energy_needed_for_h2 = daily_load_kw * hydrogen_autonomy_hours
-        h2_daily_kg = energy_needed_for_h2 / (fc_eff * h2_lhv)
-
+        energy_for_h2 = daily_load_kw * hydrogen_autonomy_hours
+        h2_daily_kg = energy_for_h2 / (fc_eff * h2_lhv)
         h2_storage_capacity = h2_daily_kg * (hydrogen_autonomy_hours / 24)
 
-        fuel_cell_power = (daily_load_kw / fc_eff) * sizing_safety_factors.safety_margin_general
+        fuel_cell_power = daily_load_kw * sizing_safety_factors.safety_margin_general   # 8 * 1.1 = 8.8
 
         # === ELECTROLYZER ===
         ely_eff = efficiencies_constants.electrolyzer_efficiency_percent / 100
@@ -180,19 +180,21 @@ class HydrogenCalculator:
         ely_daily_kwh = h2_daily_kg * (h2_lhv / ely_eff)
         electrolyzer_power = ely_daily_kwh / charge_window
 
-        # === PV ===
-        pv_eff_factor = efficiencies_constants.pv_efficiency_factor
+        # === PV (matches ~70 kWp) + AREA ===
         avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-
-        battery_charging_kwh = daily_consumption_kwh / (efficiencies_constants.battery_efficiency_percent / 100)
-        total_pv_energy_needed = (
-            daily_consumption_kwh +                      # direct load
-            (battery_charging_kwh - daily_consumption_kwh) +  # battery losses
-            ely_daily_kwh                                 # electrolyzer
+        battery_charging_kwh = daily_consumption_kwh / battery_eff
+        total_energy_needed = (
+            daily_consumption_kwh +
+            (battery_charging_kwh - daily_consumption_kwh) +
+            ely_daily_kwh
         ) * sizing_safety_factors.safety_margin_general
 
-        pv_capacity_kwp = total_pv_energy_needed / (avg_psh * pv_eff_factor)
+        pv_eff_factor = efficiencies_constants.pv_efficiency_factor
+        pv_capacity_kwp = total_energy_needed / (avg_psh * pv_eff_factor)
         pv_capacity_kwp *= sizing_safety_factors.pv_oversizing_factor
+
+        # Area (rule of thumb 6 m²/kWp - matches your 419 m²)
+        pv_area_m2 = pv_capacity_kwp * 6.0
 
         return SizingOutput(
             daily_consumption_kwh=daily_consumption_kwh,
@@ -204,6 +206,7 @@ class HydrogenCalculator:
             electrolyzer_capacity_kw=electrolyzer_power,
             fuel_cell_capacity_kw=fuel_cell_power,
             pv_capacity_kwp=pv_capacity_kwp,
+            pv_area_m2=pv_area_m2,
         )
 
 
@@ -309,6 +312,7 @@ class HydrogenCalculator:
             oxygen_byproduct_revenue_usd_per_year=oxygen_revenue,
             total_revenue_usd_per_year=total_revenue,
         )
+        
     #==== Financial metrics calculations (NPV, IRR, Payback, LCOE, LCOH) with inflation and discounting ====#
         
     # @classmethod
