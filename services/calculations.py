@@ -313,21 +313,7 @@ class HydrogenCalculator:
             total_revenue_usd_per_year=total_revenue,
         )
         
-    #==== Financial metrics calculations (NPV, IRR, Payback, LCOE, LCOH) with inflation and discounting ====#
-        
-    # @classmethod
-    # def _calculate_financial_metrics(
-    #     cls,
-    #     capex: CapexBreakdownOutput,
-    #     opex: OpexBreakdownOutput,
-    #     revenue: RevenueStreamsOutput,
-    #     financial_assumptions,
-    #     efficiencies_constants,
-    #     sizing: SizingOutput,
-    # ) -> FinancialMetricsOutput:
-        # """Exact Excel match + revenue growth over EaaS contract years + EBITDA."""
-
-       
+      
 
     # ========== FINANCIAL METRICS ==========
 
@@ -443,7 +429,6 @@ class HydrogenCalculator:
         else:
             annuity = 1 / project_life
         return (investment * annuity + annual_opex) / annual_h2_kg
-
 
     # ========== MONTHLY DATA FOR CHARTING ==========
 
