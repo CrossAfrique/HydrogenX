@@ -260,60 +260,34 @@ class HydrogenCalculator:
 
 
     # ========== REVENUE CALCULATIONS ==========
-
     @classmethod
     def _calculate_revenue(cls, sizing: SizingOutput, efficiencies_constants, financial_assumptions, cost_parameters) -> RevenueStreamsOutput:
-        """Calculate annual revenue from all streams.
-        
-        Revenue sources:
-        1. H2 sales at specified price
-        2. Excess electricity sales
-        3. Heat recovery from electrolyzer
-        4. Oxygen byproduct
-        """
-        # Daily production values
-        h2_daily_kg = sizing.h2_daily_production_kg
-        operation_days = 330  # assume default
+        # 1. EaaS Revenue (The core electricity sales)
+        # Based on actual 8kW load served
+        annual_load_kwh = sizing.daily_consumption_kwh * 365
+        electricity_revenue = annual_load_kwh * financial_assumptions.eaas_price_usd_per_kwh
 
-        # Annual production
-        h2_annual_kg = h2_daily_kg * operation_days
-        
-        # Oxygen byproduct
+        # 2. Oxygen Revenue (9kg of O2 per 1kg of H2)
+        h2_annual_kg = sizing.h2_daily_production_kg * 365
         o2_annual_kg = h2_annual_kg * cost_parameters.oxygen_production_ratio_kg_per_kg
-
-        # H2 Sales Revenue - assume default price since not in new model
-        h2_price = 3.0  # placeholder
-        h2_revenue = h2_annual_kg * h2_price
-
-        # Electricity sales (EaaS)
-        avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-        pv_daily_kwh = sizing.pv_capacity_kwp * avg_psh
-        pv_annual_kwh = pv_daily_kwh * operation_days
-        
-        # Assume 10% excess available
-        excess_electricity_kwh = pv_annual_kwh * 0.10
-        electricity_revenue = excess_electricity_kwh * financial_assumptions.eaas_price_usd_per_kwh
-
-        # Heat recovery from electrolyzer - assume default
-        heat_price = 0.08  # placeholder
-        pv_energy_for_heat = pv_annual_kwh * (1 - 0.75)  # 75% goes to H2, 25% available
-        heat_available_kwh = pv_energy_for_heat
-        heat_revenue = heat_available_kwh * heat_price
-
-        # Oxygen sales
         oxygen_revenue = o2_annual_kg * cost_parameters.oxygen_price_usd_per_kg
 
-        total_revenue = h2_revenue + electricity_revenue + heat_revenue + oxygen_revenue
+        # 3. Heat Recovery (Thermal recovery from the electrolyzer/FC)
+        # Assuming you sell the recovered heat at a specific rate
+        heat_price = getattr(cost_parameters, 'heat_price_usd_per_kwh', 0.05) 
+        heat_revenue = h2_annual_kg * efficiencies_constants.hydrogen_lhv_kwh_per_kg * 0.20 * heat_price # Example 20% recovery
+
+        # 4. Total
+        total_revenue = electricity_revenue + oxygen_revenue + heat_revenue
 
         return RevenueStreamsOutput(
-            h2_sales_revenue_usd_per_year=h2_revenue,
+            h2_sales_revenue_usd_per_year=0.0, # Kept separate if not selling H2 directly
             electricity_sales_revenue_usd_per_year=electricity_revenue,
             heat_recovery_revenue_usd_per_year=heat_revenue,
             oxygen_byproduct_revenue_usd_per_year=oxygen_revenue,
             total_revenue_usd_per_year=total_revenue,
         )
         
-      
 
     # ========== FINANCIAL METRICS ==========
 
@@ -395,22 +369,36 @@ class HydrogenCalculator:
         return investment / annual_cash_flow if annual_cash_flow > 0 else float("inf")
 
     @staticmethod
-    def _calculate_lcoe(
-        investment: float,
+    def _calculate_lcoe( investment: float,
         annual_opex: float,
         annual_energy_kwh: float,
         discount_rate: float,
-        project_life: int,
-    ) -> float:
-        """Levelized Cost of Energy."""
-        if annual_energy_kwh <= 0:
-            return 0
-        dr = discount_rate
-        if dr > 0:
-            annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
-        else:
-            annuity = 1 / project_life
-        return (investment * annuity + annual_opex) / annual_energy_kwh
+        project_life: int, ) -> float:
+        """Standard DCF LCOE to match Excel."""
+        total_costs_npv = investment
+        total_energy_discounted = 0
+        for year in range(1, project_life + 1):
+            total_costs_npv += annual_opex / ((1 + discount_rate) ** year)
+            total_energy_discounted += annual_energy_kwh / ((1 + discount_rate) ** year)
+        return total_costs_npv / total_energy_discounted if total_energy_discounted > 0 else 0
+    
+    # @staticmethod
+    # def _calculate_lcoe(
+    #     investment: float,
+    #     annual_opex: float,
+    #     annual_energy_kwh: float,
+    #     discount_rate: float,
+    #     project_life: int,
+    # ) -> float:
+    #     """Levelized Cost of Energy."""
+    #     if annual_energy_kwh <= 0:
+    #         return 0
+    #     dr = discount_rate
+    #     if dr > 0:
+    #         annuity = dr * (1 + dr) ** project_life / ((1 + dr) ** project_life - 1)
+    #     else:
+    #         annuity = 1 / project_life
+    #     return (investment * annuity + annual_opex) / annual_energy_kwh
 
     @staticmethod
     def _calculate_lcoh(
