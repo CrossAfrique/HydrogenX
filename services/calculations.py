@@ -58,16 +58,16 @@ class HydrogenCalculator:
         fa = input_data.financial_assumptions
         cp = input_data.cost_parameters
 
-        # Use site_load_kwh directly if provided, otherwise convert from daily_load_kwh
-        # if la.site_load_kwh is not None:
-        #     daily_load_kw = la.site_load_kwh
-        # else:
-        #     # Convert daily load from kWh/day to kW
-        #     daily_load_kw = la.daily_load_kwh / 24
+        # Determine the average site load in kW.
+        # Prefer an explicit `site_load_kw` if provided, otherwise derive from daily energy consumption.
+        if la.site_load_kw is not None:
+            daily_load_kw = la.site_load_kw
+        else:
+            daily_load_kw = la.daily_load_kwh / 24
 
         # === STEP 1: SIZING ===
         sizing = cls._calculate_sizing_from_load(
-            daily_load_kw =la.site_load_kw,
+            daily_load_kw=daily_load_kw,
             battery_autonomy_hours=la.battery_autonomy_hours,
             hydrogen_autonomy_hours=la.hydrogen_autonomy_hours,
             efficiencies_constants=ec,
@@ -182,10 +182,15 @@ class HydrogenCalculator:
 
         # === PV (matches ~70 kWp) + AREA ===
         avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-        battery_charging_kwh = daily_consumption_kwh / battery_eff
+
+        # The PV system must supply:
+        #   1) the daily site consumption (kWh)
+        #   2) the additional energy losses from charging the battery (round-trip losses)
+        #   3) the energy consumed by the electrolyzer to produce hydrogen
+        battery_loss_kwh = battery_usable_needed * (1 / battery_eff - 1)
         total_energy_needed = (
             daily_consumption_kwh +
-            (battery_charging_kwh - daily_consumption_kwh) +
+            battery_loss_kwh +
             ely_daily_kwh
         ) * sizing_safety_factors.safety_margin_general
 
@@ -193,7 +198,7 @@ class HydrogenCalculator:
         pv_capacity_kwp = total_energy_needed / (avg_psh * pv_eff_factor)
         pv_capacity_kwp *= sizing_safety_factors.pv_oversizing_factor
 
-        # Area (rule of thumb 6 m²/kWp - matches your 419 m²)
+        # Area (rule of thumb 6 m²/kWp)
         pv_area_m2 = pv_capacity_kwp * 6.0
 
         return SizingOutput(
@@ -302,39 +307,55 @@ class HydrogenCalculator:
         sizing: SizingOutput,
     ) -> FinancialMetricsOutput:
         """Calculate key financial metrics with inflation and discounting."""
-        inv = capex.total_capex_after_subsidy_usd
-        annual_revenue = revenue.total_revenue_usd_per_year
+        # Use pre-subsidy CAPEX for levelized costs and discounting to align with typical Excel models
+        inv_pre_subsidy = capex.total_capex_before_subsidy_usd
+        # Use the EaaS electricity revenue stream as the primary cashflow driver (matches Excel model)
+        annual_revenue = revenue.electricity_sales_revenue_usd_per_year
         annual_opex = opex.total_opex_usd_per_year
         annual_ebitda = annual_revenue - annual_opex
 
         discount = financial_assumptions.discount_rate_percent / 100
         life = int(financial_assumptions.system_lifetime_years)
         inflation = financial_assumptions.opex_inflation_percent / 100
+        revenue_growth = financial_assumptions.revenue_growth_percent / 100
+        contract_years = int(financial_assumptions.eaas_contract_years)
 
-        # Build cash flows with inflation
-        cash_flows = [-inv]
-        for yr in range(1, life + 1):
-            # Inflate EBITDA for future years
-            cf = annual_ebitda * ((1 + inflation) ** (yr - 1))
-            cash_flows.append(cf)
+        # Build cash flows (year 0 = -investment; years 1..contract_years = EBITDA with growth + inflation)
+        cash_flows = [-inv_pre_subsidy]
+        for yr in range(1, contract_years + 1):
+            rev = annual_revenue * ((1 + revenue_growth) ** (yr - 1))
+            opex = annual_opex * ((1 + inflation) ** (yr - 1))
+            cash_flows.append(rev - opex)
 
-        # Calculate NPV and IRR
+        # Calculate NPV and IRR based on the contract cash flows
         npv = cls._calculate_npv(cash_flows, discount)
         irr = cls._calculate_irr(cash_flows) * 100
 
-        # Payback period (simple, without discounting)
-        payback = cls._calculate_payback_period(inv, annual_ebitda) if annual_ebitda > 0 else float("inf")
+        # Payback period (simple, without discounting) using base EBITDA
+        payback = cls._calculate_payback_period(inv_pre_subsidy, annual_ebitda) if annual_ebitda > 0 else float("inf")
 
-        # LCOE and LCOH
-        avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
-        
-        # Annual electricity production from PV (kWh/year)
-        annual_electricity_kwh = sizing.pv_capacity_kwp * avg_psh * 365
-        lcoe = cls._calculate_lcoe(inv, annual_opex, annual_electricity_kwh, discount, life)
-        
-        # Annual hydrogen production (kg/year)
+        # Discounted revenue/opex/energy for reporting and LCOE
+        discounted_revenue = 0.0
+        for yr in range(1, contract_years + 1):
+            rev = annual_revenue * ((1 + revenue_growth) ** (yr - 1))
+            discounted_revenue += rev / ((1 + discount) ** yr)
+
+        discounted_opex = 0.0
+        for yr in range(1, life + 1):
+            opex = annual_opex * ((1 + inflation) ** (yr - 1))
+            discounted_opex += opex / ((1 + discount) ** yr)
+
+        discounted_energy = 0.0
+        annual_energy_kwh = sizing.daily_consumption_kwh * 365
+        for yr in range(1, life + 1):
+            discounted_energy += annual_energy_kwh / ((1 + discount) ** yr)
+
+        total_discounted_cost = inv_pre_subsidy + discounted_opex
+
+        # LCOE and LCOH based on discounted totals
+        lcoe = total_discounted_cost / discounted_energy if discounted_energy > 0 else 0
         annual_h2_kg = sizing.h2_daily_production_kg * 365
-        lcoh = cls._calculate_lcoh(inv, annual_opex, annual_h2_kg, discount, life)
+        lcoh = cls._calculate_lcoh(inv_pre_subsidy, annual_opex, annual_h2_kg, discount, life)
 
         return FinancialMetricsOutput(
             lcoe_usd_per_kwh=lcoe,
@@ -343,6 +364,11 @@ class HydrogenCalculator:
             npv_usd=npv,
             payback_period_years=payback,
             ebitda_usd_per_year=annual_ebitda,
+            discounted_revenue_usd=discounted_revenue,
+            discounted_opex_usd=discounted_opex,
+            discounted_energy_kwh=discounted_energy,
+            total_discounted_cost_usd=total_discounted_cost,
+            cash_flow_usd=cash_flows,
         )
 
 

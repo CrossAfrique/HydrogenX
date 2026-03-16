@@ -45,8 +45,8 @@ class EfficienciesConstantsInput(BaseModel):
 
 class SizingSafetyFactorsInput(BaseModel):
     """Sizing Safety Factors parameters"""
-    pv_oversizing_factor: float = Field(default=1.2, gt=0,
-                                       description="Oversizing Factor for PV")
+    pv_oversizing_factor: float = Field(default=1.0, gt=0,
+                                       description="Oversizing Factor for PV (set to 1.0 to match common Excel reference models)")
     safety_margin_general: float = Field(default=1.1, gt=0,
                                         description="Safety Margin (general)")
 
@@ -147,6 +147,7 @@ class SizingOutput(BaseModel):
     
     # PV sizing
     pv_capacity_kwp: float = Field(..., description="PV array capacity in kWp")
+    pv_area_m2: float = Field(..., description="PV array area in m^2")
 
 
 class CapexBreakdownOutput(BaseModel):
@@ -196,6 +197,11 @@ class FinancialMetricsOutput(BaseModel):
     npv_usd: float = Field(..., description="NPV in USD")
     payback_period_years: float = Field(..., description="Payback period in years")
     ebitda_usd_per_year: float = Field(..., description="Annual EBITDA in USD")
+    discounted_revenue_usd: float = Field(..., description="Discounted revenue over contract years")
+    discounted_opex_usd: float = Field(..., description="Discounted opex over system lifetime")
+    discounted_energy_kwh: float = Field(..., description="Discounted energy production over system lifetime")
+    total_discounted_cost_usd: float = Field(..., description="Total discounted cost (capex + opex)")
+    cash_flow_usd: List[float] = Field(..., description="Annual cash flow series (year 0 first)")
 
 
 class MonthlyDataPoint(BaseModel):
