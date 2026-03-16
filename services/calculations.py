@@ -59,15 +59,15 @@ class HydrogenCalculator:
         cp = input_data.cost_parameters
 
         # Use site_load_kwh directly if provided, otherwise convert from daily_load_kwh
-        if la.site_load_kwh is not None:
-            daily_load_kw = la.site_load_kwh
-        else:
-            # Convert daily load from kWh/day to kW
-            daily_load_kw = la.daily_load_kwh / 24
+        # if la.site_load_kwh is not None:
+        #     daily_load_kw = la.site_load_kwh
+        # else:
+        #     # Convert daily load from kWh/day to kW
+        #     daily_load_kw = la.daily_load_kwh / 24
 
         # === STEP 1: SIZING ===
         sizing = cls._calculate_sizing_from_load(
-            daily_load_kw=daily_load_kw,
+            daily_load_kw =la.site_load_kw,
             battery_autonomy_hours=la.battery_autonomy_hours,
             hydrogen_autonomy_hours=la.hydrogen_autonomy_hours,
             efficiencies_constants=ec,
