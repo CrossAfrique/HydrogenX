@@ -52,6 +52,9 @@ class HydrogenCalculator:
         6. Generate monthly data for charting
         7. Optional: sensitivity analysis
         """
+        # Map frontend fields to internal structure
+        cls._map_frontend_fields(input_data)
+        
         la = input_data.load_autonomy
         ec = input_data.efficiencies_constants
         sf = input_data.sizing_safety_factors
@@ -105,6 +108,39 @@ class HydrogenCalculator:
             monthly_data=monthly,
             sensitivity=sensitivity,
         )
+
+    @classmethod
+    def _map_frontend_fields(cls, input_data: SingleSiteInput) -> None:
+        """Map frontend top-level fields to internal nested structure."""
+        # Map load autonomy
+        if input_data.daily_load_kw is not None:
+            input_data.load_autonomy.site_load_kw = input_data.daily_load_kw
+        if input_data.battery_autonomy_hours is not None:
+            input_data.load_autonomy.battery_autonomy_hours = input_data.battery_autonomy_hours
+        if input_data.hydrogen_autonomy_hours is not None:
+            input_data.load_autonomy.hydrogen_autonomy_hours = input_data.hydrogen_autonomy_hours
+        
+        # Map tech specs
+        if input_data.tech_specs is not None:
+            ts = input_data.tech_specs
+            input_data.efficiencies_constants.battery_dod_percent = ts.battery_usable_ratio * 100
+            input_data.efficiencies_constants.battery_efficiency_percent = ts.battery_efficiency_percent
+            input_data.efficiencies_constants.fuel_cell_efficiency_percent = ts.fuel_cell_efficiency_percent
+            input_data.efficiencies_constants.electrolyzer_efficiency_percent = ts.electrolyzer_efficiency_percent
+            input_data.efficiencies_constants.pv_efficiency_factor = ts.pv_performance_ratio
+            # Set PSH to the provided value for both months
+            input_data.efficiencies_constants.jan_average_psh = ts.peak_sun_hours_per_day
+            input_data.efficiencies_constants.august_average_psh = ts.peak_sun_hours_per_day
+        
+        # Map global params
+        if input_data.global_params is not None:
+            gp = input_data.global_params
+            input_data.financial_assumptions.discount_rate_percent = gp.discount_rate_percent
+            input_data.financial_assumptions.opex_inflation_percent = gp.inflation_percent
+            input_data.financial_assumptions.capex_subsidy_percent = gp.subsidy_percent
+            input_data.financial_assumptions.eaas_price_usd_per_kwh = gp.eaas_price_usd_per_kwh
+            input_data.financial_assumptions.system_lifetime_years = gp.project_lifetime_years
+            # operation_days_per_year can be used if needed, but not currently in financial_assumptions
 
     @classmethod
     def calculate_portfolio(cls, input_data: PortfolioInput) -> PortfolioOutput:

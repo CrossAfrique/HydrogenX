@@ -12,7 +12,7 @@ from datetime import datetime
 
 class LoadAutonomyInput(BaseModel):
     """Project Load & Autonomy parameters"""
-    daily_load_kwh: float = Field(..., gt=0, description="Daily Load (kWh/day)")
+    daily_load_kwh: float = Field(default=192.0, gt=0, description="Daily Load (kWh/day)")
     site_load_kw: float = Field(default=None, gt=0,
                                 description="Site Load (kW) - average power. If provided, overrides daily_load_kwh conversion")
     battery_autonomy_hours: float = Field(default=12.0, gt=0,
@@ -95,6 +95,38 @@ class CostParametersInput(BaseModel):
                           description="Area (M^2)")
 
 
+class TechSpecsInput(BaseModel):
+    """Technical Specifications parameters"""
+    battery_usable_ratio: float = Field(default=0.8, ge=0, le=1,
+                                       description="Battery Usable Ratio (DoD)")
+    battery_efficiency_percent: float = Field(default=90.0, ge=80, le=99,
+                                             description="Battery Efficiency (%)")
+    fuel_cell_efficiency_percent: float = Field(default=50.0, ge=40, le=75,
+                                               description="Fuel Cell Efficiency (%)")
+    electrolyzer_efficiency_percent: float = Field(default=70.0, ge=60, le=85,
+                                                  description="Electrolyzer Efficiency (%)")
+    pv_performance_ratio: float = Field(default=1.2, gt=0,
+                                       description="PV Performance Ratio")
+    peak_sun_hours_per_day: float = Field(default=4.2, ge=0,
+                                         description="Peak Sun Hours per Day")
+
+
+class GlobalParamsInput(BaseModel):
+    """Global Parameters"""
+    discount_rate_percent: float = Field(default=10.0, ge=0, le=30,
+                                        description="Discount Rate (%)")
+    inflation_percent: float = Field(default=2.0, ge=0, le=10,
+                                    description="Inflation (%)")
+    subsidy_percent: float = Field(default=30.0, ge=0, le=100,
+                                  description="Subsidy (%)")
+    eaas_price_usd_per_kwh: float = Field(default=0.267, gt=0,
+                                         description="EaaS Price ($/kWh)")
+    project_lifetime_years: float = Field(default=15.0, ge=10, le=50,
+                                        description="Project Lifetime (years)")
+    operation_days_per_year: int = Field(default=365, ge=0, le=365,
+                                        description="Operation Days per Year")
+
+
 class SingleSiteInput(BaseModel):
     """Single site calculation input - LOAD-CENTRIC ARCHITECTURE
     
@@ -104,6 +136,13 @@ class SingleSiteInput(BaseModel):
     3. hydrogen_autonomy_hours: Hours of additional H2 fuel cell operation
     """
     site_name: Optional[str] = Field(default="Site 1", description="Site name")
+    
+    # Frontend-compatible top-level fields
+    daily_load_kw: Optional[float] = Field(default=None, gt=0, description="Site Load (kW) - average power")
+    battery_autonomy_hours: Optional[float] = Field(default=None, gt=0, description="Battery Autonomy (hours)")
+    hydrogen_autonomy_hours: Optional[float] = Field(default=None, ge=0, description="Hydrogen Autonomy (hours)")
+    tech_specs: Optional[TechSpecsInput] = Field(default=None, description="Technical Specifications")
+    global_params: Optional[GlobalParamsInput] = Field(default=None, description="Global Parameters")
     
     # ===== PRIMARY DRIVERS (everything else derives from these) =====
     load_autonomy: LoadAutonomyInput = Field(default_factory=LoadAutonomyInput,
