@@ -12,7 +12,9 @@ from datetime import datetime
 
 class LoadAutonomyInput(BaseModel):
     """Project Load & Autonomy parameters"""
-    daily_load_kwh: float = Field(default=1.0, gt=0, description="Daily Load (kWh/day)")
+    daily_load_kwh: float = Field(default=192.0, gt=0, description="Daily Load (kWh/day)")
+    daily_load_kw: Optional[float] = Field(default=None, gt=0,
+                                          description="Site Load (kW) - average power (alternative input)")
     site_load_kw: float = Field(default=None, gt=0,
                                 description="Site Load (kW) - average power. If provided, overrides daily_load_kwh conversion")
     battery_autonomy_hours: float = Field(default=12.0, gt=0,

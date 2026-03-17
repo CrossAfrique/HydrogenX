@@ -62,9 +62,11 @@ class HydrogenCalculator:
         cp = input_data.cost_parameters
 
         # Determine the average site load in kW.
-        # Prefer an explicit `site_load_kw` if provided, otherwise derive from daily energy consumption.
+        # Priority: top-level daily_load_kw -> nested load_autonomy.site_load_kw -> nested load_autonomy.daily_load_kw -> derived from daily_load_kwh.
         if la.site_load_kw is not None:
             daily_load_kw = la.site_load_kw
+        elif getattr(la, "daily_load_kw", None) is not None:
+            daily_load_kw = la.daily_load_kw
         else:
             daily_load_kw = la.daily_load_kwh / 24
 
@@ -115,6 +117,11 @@ class HydrogenCalculator:
         # Map load autonomy
         if input_data.daily_load_kw is not None:
             input_data.load_autonomy.site_load_kw = input_data.daily_load_kw
+
+        # Accept either nested load_autonomy.daily_load_kw or nested load_autonomy.site_load_kw
+        if getattr(input_data.load_autonomy, "daily_load_kw", None) is not None:
+            input_data.load_autonomy.site_load_kw = input_data.load_autonomy.daily_load_kw
+
         if input_data.battery_autonomy_hours is not None:
             input_data.load_autonomy.battery_autonomy_hours = input_data.battery_autonomy_hours
         if input_data.hydrogen_autonomy_hours is not None:
