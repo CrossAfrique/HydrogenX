@@ -40,6 +40,87 @@ class HydrogenCalculator:
     """
 
     @classmethod
+    def build_single_site_input(cls, payload: dict) -> SingleSiteInput:
+        """Normalize frontend payload into SingleSiteInput."""
+        normalized = {}
+
+        if "site_name" in payload:
+            normalized["site_name"] = payload["site_name"]
+        if "daily_load_kw" in payload:
+            normalized["daily_load_kw"] = payload["daily_load_kw"]
+        if "battery_autonomy_hours" in payload:
+            normalized["battery_autonomy_hours"] = payload["battery_autonomy_hours"]
+        if "hydrogen_autonomy_hours" in payload:
+            normalized["hydrogen_autonomy_hours"] = payload["hydrogen_autonomy_hours"]
+
+        # load_autonomy block
+        la = payload.get("load_autonomy", {}) or {}
+        normalized_la = {}
+        for key in ["daily_load_kwh", "daily_load_kw", "site_load_kw", "battery_autonomy_hours", "hydrogen_autonomy_hours", "electrolyzer_charge_window_hours"]:
+            if key in la:
+                normalized_la[key] = la[key]
+        if normalized_la:
+            normalized["load_autonomy"] = normalized_la
+
+        # sizing_safety_factors alias
+        ss = payload.get("sizing_safeties", {}) or {}
+        if ss:
+            normalized_ss = {}
+            if "oversize_factor_pv" in ss:
+                normalized_ss["pv_oversizing_factor"] = ss["oversize_factor_pv"]
+            if "safety_margin" in ss:
+                normalized_ss["safety_margin_general"] = ss["safety_margin"]
+            if normalized_ss:
+                normalized["sizing_safety_factors"] = normalized_ss
+
+        # tech specs (directly accepted)
+        if "tech_specs" in payload and payload["tech_specs"] is not None:
+            normalized["tech_specs"] = payload["tech_specs"]
+
+        # global params (directly accepted)
+        if "global_params" in payload and payload["global_params"] is not None:
+            normalized["global_params"] = payload["global_params"]
+
+        # cost parameters alias mapping
+        costs = payload.get("costs", {}) or {}
+        if costs:
+            normalized_cp = {}
+            if "solar_pv_cost_per_kw" in costs:
+                normalized_cp["solar_pv_cost_usd_per_kwp"] = costs["solar_pv_cost_per_kw"]
+            if "battery_cost_per_kwh" in costs:
+                normalized_cp["battery_cost_usd_per_kwh"] = costs["battery_cost_per_kwh"]
+            if "fuel_cell_cost_per_kw" in costs:
+                normalized_cp["fuel_cell_cost_usd_per_kw"] = costs["fuel_cell_cost_per_kw"]
+            if "electrolyzer_cost_per_kw" in costs:
+                normalized_cp["electrolyzer_cost_usd_per_kw"] = costs["electrolyzer_cost_per_kw"]
+            if "oxygen_production_ratio" in costs:
+                normalized_cp["oxygen_production_ratio_kg_per_kg"] = costs["oxygen_production_ratio"]
+            if "oxygen_price_per_kg" in costs:
+                normalized_cp["oxygen_price_usd_per_kg"] = costs["oxygen_price_per_kg"]
+            if normalized_cp:
+                normalized["cost_parameters"] = normalized_cp
+
+        # opex_params and market_params -> financial assumptions
+        fa = payload.get("opex_params", {}) or {}
+        mp = payload.get("market_params", {}) or {}
+        if fa or mp:
+            normalized_fa = {}
+            if "opex_rate_pv_battery_percent" in fa:
+                normalized_fa["opex_rate_pv_battery_percent"] = fa["opex_rate_pv_battery_percent"]
+            if "opex_rate_electrolyzer_fuel_cell_percent" in fa:
+                normalized_fa["opex_rate_electrolyzer_fc_percent"] = fa["opex_rate_electrolyzer_fuel_cell_percent"]
+            if "diesel_lcoe_usd_per_kwh" in mp:
+                normalized_fa["diesel_lcoe_usd_per_kwh"] = mp["diesel_lcoe_usd_per_kwh"]
+            if "units_deployed" in mp:
+                normalized_fa["units_deployed"] = mp["units_deployed"]
+            # Some market params may be in top-level map
+            if normalized_fa:
+                normalized["financial_assumptions"] = normalized_fa
+
+        # Build SingleSiteInput confidently with defaults for missing sections
+        return SingleSiteInput(**normalized)
+
+    @classmethod
     def calculate_single_site(cls, input_data: SingleSiteInput) -> SingleSiteOutput:
         """Calculate single site with load-centric architecture.
         
@@ -119,7 +200,7 @@ class HydrogenCalculator:
             input_data.load_autonomy.site_load_kw = input_data.daily_load_kw
 
         # Accept either nested load_autonomy.daily_load_kw or nested load_autonomy.site_load_kw
-        if getattr(input_data.load_autonomy, "daily_load_kw", None) is not None:
+        if getattr(input_data.load_autonomy, "daily_load_kw", None) is not None and input_data.load_autonomy.site_load_kw is None:
             input_data.load_autonomy.site_load_kw = input_data.load_autonomy.daily_load_kw
 
         if input_data.battery_autonomy_hours is not None:

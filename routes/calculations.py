@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
     summary="Calculate Single Site Metrics",
     description="Calculate energy, sizing, financial metrics, and revenue streams for a single site"
 )
-async def calculate_single_site(request: SingleSiteInput) -> SingleSiteOutput:
+async def calculate_single_site(request: dict) -> SingleSiteOutput:
     """
     Calculate comprehensive metrics for a single hydrogen/energy site
     
@@ -36,7 +36,7 @@ async def calculate_single_site(request: SingleSiteInput) -> SingleSiteOutput:
     - Monthly revenue vs OPEX data for charting
     
     Args:
-        request: SingleSiteInput with all parameters
+        request: raw payload dictionary from frontend
         
     Returns:
         SingleSiteOutput with all calculated results
@@ -45,12 +45,13 @@ async def calculate_single_site(request: SingleSiteInput) -> SingleSiteOutput:
         HTTPException: If calculation fails
     """
     try:
-        logger.info(f"Calculating single site: {request.site_name}")
+        single_site_input = HydrogenCalculator.build_single_site_input(request)
+        logger.info(f"Calculating single site: {single_site_input.site_name}")
         
         # Perform calculation using the new HydrogenCalculator
-        result = HydrogenCalculator.calculate_single_site(request)
+        result = HydrogenCalculator.calculate_single_site(single_site_input)
         
-        logger.info(f"Single site calculation completed for {request.site_name}")
+        logger.info(f"Single site calculation completed for {single_site_input.site_name}")
         return result
         
     except ValueError as e:
