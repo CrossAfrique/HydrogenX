@@ -43,6 +43,10 @@ class EfficienciesConstantsInput(BaseModel):
                                   description="Jan Average PSH")
     august_average_psh: float = Field(default=3.3, ge=0,
                                      description="August Average PSH")
+    battery_cycle_life_cycles: int = Field(default=3500, ge=1,
+                                          description="Battery full cycles to end-of-life capacity")
+    battery_end_of_life_capacity_percent: float = Field(default=80.0, ge=50, le=100,
+                                                       description="Battery retained capacity (%) at end of life")
 
 
 class SizingSafetyFactorsInput(BaseModel):
@@ -77,6 +81,8 @@ class FinancialAssumptionsInput(BaseModel):
                                          description="EaaS Price ($/kWh)")
     units_deployed: int = Field(default=1, gt=0,
                                description="Units Deployed")
+    operation_days_per_year: int = Field(default=365, ge=0, le=365,
+                                        description="Days of operation per year used for battery cycle calculations")
 
 
 class CostParametersInput(BaseModel):
@@ -111,6 +117,10 @@ class TechSpecsInput(BaseModel):
                                        description="PV Performance Ratio")
     peak_sun_hours_per_day: float = Field(default=4.2, ge=0,
                                          description="Peak Sun Hours per Day")
+    battery_cycle_life_cycles: int = Field(default=3500, ge=1,
+                                          description="Battery full cycles to end-of-life capacity")
+    battery_end_of_life_capacity_percent: float = Field(default=80.0, ge=50, le=100,
+                                                       description="Battery retained capacity (%) at end of life")
 
 
 class GlobalParamsInput(BaseModel):
@@ -145,6 +155,8 @@ class SingleSiteInput(BaseModel):
     hydrogen_autonomy_hours: Optional[float] = Field(default=None, ge=0, description="Hydrogen Autonomy (hours)")
     tech_specs: Optional[TechSpecsInput] = Field(default=None, description="Technical Specifications")
     global_params: Optional[GlobalParamsInput] = Field(default=None, description="Global Parameters")
+    monthly_ghi: Optional[List[float]] = Field(default=None,
+                                              description="Optional 12-month average GHI profile in kWh/m²/day")
     
     # ===== PRIMARY DRIVERS (everything else derives from these) =====
     load_autonomy: LoadAutonomyInput = Field(default_factory=LoadAutonomyInput,
@@ -159,9 +171,16 @@ class SingleSiteInput(BaseModel):
                                                  description="Cost Parameters")
 
 
+class HourlySimulationRequest(BaseModel):
+    """Request for hourly simulation of a single site."""
+    input_data: SingleSiteInput = Field(..., description="Single site input payload")
+    hourly_ghi: List[float] = Field(..., min_length=8760, max_length=8760,
+                                   description="8760 hourly GHI values in kWh/m² for the simulation year")
+
+
 class PortfolioInput(BaseModel):
     """Portfolio calculation input - array of sites with optional global parameter override"""
-    sites: List[SingleSiteInput] = Field(..., min_items=1,
+    sites: List[SingleSiteInput] = Field(..., min_length=1,
                                         description="Array of sites for portfolio analysis")
     portfolio_name: Optional[str] = Field(default="Portfolio",
                                          description="Portfolio name")
@@ -189,6 +208,9 @@ class SizingOutput(BaseModel):
     # PV sizing
     pv_capacity_kwp: float = Field(..., description="PV array capacity in kWp")
     pv_area_m2: float = Field(..., description="PV array area in m^2")
+    battery_cumulative_cycles: float = Field(..., description="Expected battery cumulative cycles over the project lifetime")
+    battery_capacity_factor: float = Field(..., description="Average battery capacity factor after degradation over the lifetime")
+    battery_eol_capacity_factor: float = Field(..., description="Battery capacity factor at end of life")
 
 
 class CapexBreakdownOutput(BaseModel):
@@ -295,6 +317,14 @@ class PortfolioOutput(BaseModel):
     # Aggregated monthly data for charting
     monthly_data: List['MonthlyDataPoint'] = Field(...,
                                                    description="Aggregated 12-month revenue vs OPEX data")
+
+class HourlySnapshot(BaseModel):
+    """Hourly snapshot of system performance"""
+    hour: int = Field(..., ge=0, le=8759, description="Hour number (0-8759)")
+    pv_production_kwh: float = Field(..., description="Hourly PV production in kWh")
+    load_kwh: float = Field(..., description="Hourly load in kWh")
+    battery_soc_kwh: float = Field(..., description="Battery state of charge in kWh")
+    h2_produced_kg: float = Field(..., description="Hourly hydrogen produced in kg")
 
 
 class HealthCheckResponse(BaseModel):
