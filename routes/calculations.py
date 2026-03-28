@@ -2,16 +2,14 @@
 Calculation endpoints for HydrogenX API
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
+from typing import List
 import logging
 
-from models.schemas import SingleSiteInput
-from models.output import SingleSiteOutput
+from models.schemas import SingleSiteInput, HourlySimulationRequest, PortfolioInput, PortfolioOutput
+from models.output import SingleSiteOutput, HourlySnapshot, OptimizationResult
 
 from services.calculations import HydrogenCalculator
-
-# portfolio imports (left for future use)
-from models.schemas import PortfolioInput, PortfolioOutput
 
 router = APIRouter(prefix="", tags=["calculations"])
 logger = logging.getLogger(__name__)
@@ -65,6 +63,68 @@ async def calculate_single_site(request: dict) -> SingleSiteOutput:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred during calculation"
+        )
+
+
+@router.get(
+    "/location_ghi",
+    response_model=List[float],
+    summary="Estimate monthly PSH for a location",
+    description="Return an estimated 12-month profile of peak sun hours based on latitude/longitude"
+)
+async def location_ghi(lat: float = Query(..., description="Latitude of the location"), lon: float = Query(..., description="Longitude of the location")) -> List[float]:
+    try:
+        return HydrogenCalculator.estimate_location_monthly_psh(lat, lon)
+    except Exception as e:
+        logger.error(f"Location GHI error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not estimate location GHI values"
+        )
+
+
+@router.post(
+    "/simulate_hourly",
+    response_model=List[HourlySnapshot],
+    summary="Run detailed hourly energy simulation",
+    description="Simulate 8760 hours of PV, battery, hydrogen production, and fuel cell dispatch"
+)
+async def simulate_hourly(request: HourlySimulationRequest) -> List[HourlySnapshot]:
+    try:
+        snap = HydrogenCalculator.simulate_hourly(request.input_data, request.hourly_ghi)
+        return snap
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Hourly simulation error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to complete hourly simulation"
+        )
+
+
+@router.post(
+    "/optimize_sizing",
+    response_model=OptimizationResult,
+    summary="Optimize battery and hydrogen sizing",
+    description="Find the size pair that minimizes LCOE for a single site"
+)
+async def optimize_sizing(request: SingleSiteInput) -> OptimizationResult:
+    try:
+        return HydrogenCalculator.optimize_sizing(request)
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Optimization error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Optimization failed"
         )
 
 

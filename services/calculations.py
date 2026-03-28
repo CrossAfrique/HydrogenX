@@ -12,8 +12,9 @@ Everything else is automatically calculated from these values.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
+import importlib
 import math
 
 from models.schemas import SingleSiteInput, PortfolioInput
@@ -27,6 +28,8 @@ from models.output import (
     FinancialMetricsOutput,
     MonthlyDataPoint,
     SensitivityScenario,
+    HourlySnapshot,
+    OptimizationResult,
 )
 
 
@@ -52,6 +55,8 @@ class HydrogenCalculator:
             normalized["battery_autonomy_hours"] = payload["battery_autonomy_hours"]
         if "hydrogen_autonomy_hours" in payload:
             normalized["hydrogen_autonomy_hours"] = payload["hydrogen_autonomy_hours"]
+        if "monthly_ghi" in payload:
+            normalized["monthly_ghi"] = payload["monthly_ghi"]
 
         # load_autonomy block
         la = payload.get("load_autonomy", {}) or {}
@@ -154,12 +159,12 @@ class HydrogenCalculator:
         # === STEP 1: SIZING ===
         sizing = cls._calculate_sizing_from_load(
             daily_load_kw=daily_load_kw,
-            battery_autonomy_hours=la.battery_autonomy_hours,
-            hydrogen_autonomy_hours=la.hydrogen_autonomy_hours,
+            load_autonomy=la,
             efficiencies_constants=ec,
             sizing_safety_factors=sf,
             cost_parameters=cp,
             financial_assumptions=fa,
+            monthly_ghi=input_data.monthly_ghi,
         )
 
         # === STEP 2: CAPEX ===
@@ -178,7 +183,7 @@ class HydrogenCalculator:
         monthly = cls._calculate_monthly_data(sizing, revenue, opex, fa)
 
         # === STEP 7: SENSITIVITY (optional) ===
-        sensitivity = cls._calculate_sensitivity(sizing, capex, opex, revenue, fa, ec)
+        sensitivity = cls._calculate_sensitivity(input_data, sizing, capex, opex, revenue, fa, ec)
 
         return SingleSiteOutput(
             site_name=input_data.site_name or "Site 1",
@@ -216,10 +221,20 @@ class HydrogenCalculator:
             input_data.efficiencies_constants.fuel_cell_efficiency_percent = ts.fuel_cell_efficiency_percent
             input_data.efficiencies_constants.electrolyzer_efficiency_percent = ts.electrolyzer_efficiency_percent
             input_data.efficiencies_constants.pv_efficiency_factor = ts.pv_performance_ratio
+            input_data.efficiencies_constants.battery_cycle_life_cycles = ts.battery_cycle_life_cycles
+            input_data.efficiencies_constants.battery_end_of_life_capacity_percent = ts.battery_end_of_life_capacity_percent
             # Set PSH to the provided value for both months
             input_data.efficiencies_constants.jan_average_psh = ts.peak_sun_hours_per_day
             input_data.efficiencies_constants.august_average_psh = ts.peak_sun_hours_per_day
-        
+
+        # Apply optional monthly GHI overrides when available
+        if input_data.monthly_ghi is not None:
+            ghi = input_data.monthly_ghi
+            if len(ghi) != 12:
+                raise ValueError("monthly_ghi must contain 12 monthly values")
+            input_data.efficiencies_constants.jan_average_psh = ghi[0]
+            input_data.efficiencies_constants.august_average_psh = ghi[7]
+
         # Map global params
         if input_data.global_params is not None:
             gp = input_data.global_params
@@ -228,7 +243,7 @@ class HydrogenCalculator:
             input_data.financial_assumptions.capex_subsidy_percent = gp.subsidy_percent
             input_data.financial_assumptions.eaas_price_usd_per_kwh = gp.eaas_price_usd_per_kwh
             input_data.financial_assumptions.system_lifetime_years = gp.project_lifetime_years
-            # operation_days_per_year can be used if needed, but not currently in financial_assumptions
+            input_data.financial_assumptions.operation_days_per_year = gp.operation_days_per_year
 
     @classmethod
     def calculate_portfolio(cls, input_data: PortfolioInput) -> PortfolioOutput:
@@ -271,46 +286,45 @@ class HydrogenCalculator:
     def _calculate_sizing_from_load(
         cls,
         daily_load_kw: float,
-        battery_autonomy_hours: float,
-        hydrogen_autonomy_hours: float,
+        load_autonomy,
         efficiencies_constants,
         sizing_safety_factors,
         cost_parameters,
         financial_assumptions,
+        monthly_ghi: Optional[List[float]] = None,
     ) -> SizingOutput:
         """Calculate component sizing based on daily load and autonomy requirements."""
 
         daily_consumption_kwh = daily_load_kw * 24
 
-        # === BATTERY (matches 133 kWh gross) ===
+        # === BATTERY ===
         battery_dod = efficiencies_constants.battery_dod_percent / 100
         battery_eff = efficiencies_constants.battery_efficiency_percent / 100
-        battery_usable_needed = daily_load_kw * battery_autonomy_hours
+        battery_usable_needed = daily_load_kw * load_autonomy.battery_autonomy_hours
         battery_gross_capacity = battery_usable_needed / (battery_dod * battery_eff)
         battery_power_rating = daily_load_kw * sizing_safety_factors.safety_margin_general
 
-       # === HYDROGEN & FUEL CELL (matches Fuel Cell = 8.8 kW) ===
+        # === HYDROGEN & FUEL CELL ===
         h2_lhv = efficiencies_constants.hydrogen_lhv_kwh_per_kg
         fc_eff = efficiencies_constants.fuel_cell_efficiency_percent / 100
-        energy_for_h2 = daily_load_kw * hydrogen_autonomy_hours
+        energy_for_h2 = daily_load_kw * load_autonomy.hydrogen_autonomy_hours
         h2_daily_kg = energy_for_h2 / (fc_eff * h2_lhv)
-        h2_storage_capacity = h2_daily_kg * (hydrogen_autonomy_hours / 24)
+        h2_storage_capacity = h2_daily_kg * (load_autonomy.hydrogen_autonomy_hours / 24)
 
-        fuel_cell_power = daily_load_kw * sizing_safety_factors.safety_margin_general   # 8 * 1.1 = 8.8
+        fuel_cell_power = daily_load_kw * sizing_safety_factors.safety_margin_general
 
         # === ELECTROLYZER ===
         ely_eff = efficiencies_constants.electrolyzer_efficiency_percent / 100
-        charge_window = getattr(efficiencies_constants, 'electrolyzer_charge_window_hours', 5)  # default 5h
+        charge_window = load_autonomy.electrolyzer_charge_window_hours
         ely_daily_kwh = h2_daily_kg * (h2_lhv / ely_eff)
-        electrolyzer_power = ely_daily_kwh / charge_window
+        electrolyzer_power = max(1.0, ely_daily_kwh / charge_window)
 
-        # === PV (matches ~70 kWp) + AREA ===
-        avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2
+        # === PV SIZING ===
+        if monthly_ghi is not None and len(monthly_ghi) == 12:
+            avg_psh = sum(monthly_ghi) / 12.0
+        else:
+            avg_psh = (efficiencies_constants.jan_average_psh + efficiencies_constants.august_average_psh) / 2.0
 
-        # The PV system must supply:
-        #   1) the daily site consumption (kWh)
-        #   2) the additional energy losses from charging the battery (round-trip losses)
-        #   3) the energy consumed by the electrolyzer to produce hydrogen
         battery_loss_kwh = battery_usable_needed * (1 / battery_eff - 1)
         total_energy_needed = (
             daily_consumption_kwh +
@@ -322,8 +336,11 @@ class HydrogenCalculator:
         pv_capacity_kwp = total_energy_needed / (avg_psh * pv_eff_factor)
         pv_capacity_kwp *= sizing_safety_factors.pv_oversizing_factor
 
-        # Area (rule of thumb 6 m²/kWp)
         pv_area_m2 = pv_capacity_kwp * 6.0
+
+        battery_cycles, battery_capacity_factor, battery_eol_capacity_factor = cls._calculate_battery_degradation(
+            efficiencies_constants, financial_assumptions
+        )
 
         return SizingOutput(
             daily_consumption_kwh=daily_consumption_kwh,
@@ -336,10 +353,27 @@ class HydrogenCalculator:
             fuel_cell_capacity_kw=fuel_cell_power,
             pv_capacity_kwp=pv_capacity_kwp,
             pv_area_m2=pv_area_m2,
+            battery_cumulative_cycles=battery_cycles,
+            battery_capacity_factor=battery_capacity_factor,
+            battery_eol_capacity_factor=battery_eol_capacity_factor,
         )
 
+    @classmethod
+    def _calculate_battery_degradation(cls, efficiencies_constants, financial_assumptions) -> tuple[float, float, float]:
+        """Estimate battery fade based on cycle life assumptions."""
+        cycles_per_year = financial_assumptions.operation_days_per_year
+        total_cycles = cycles_per_year * financial_assumptions.system_lifetime_years
 
-    # ========== COST CALCULATIONS ==========
+        eol_capacity_fraction = (
+            efficiencies_constants.battery_end_of_life_capacity_percent / 100
+            if hasattr(efficiencies_constants, 'battery_end_of_life_capacity_percent')
+            else 0.8
+        )
+        fade_per_cycle = max(0.0, (1 - eol_capacity_fraction) / efficiencies_constants.battery_cycle_life_cycles)
+        end_of_life_factor = max(eol_capacity_fraction, 1 - fade_per_cycle * total_cycles)
+        average_factor = max(eol_capacity_fraction, (1 + end_of_life_factor) / 2)
+
+        return total_cycles, average_factor, end_of_life_factor
 
     @classmethod
     def _calculate_capex(cls, sizing: SizingOutput, cost_parameters, financial_assumptions) -> CapexBreakdownOutput:
@@ -350,11 +384,9 @@ class HydrogenCalculator:
         electrolyzer_capex = sizing.electrolyzer_capacity_kw * cost_parameters.electrolyzer_cost_usd_per_kw
         fuel_cell_capex = sizing.fuel_cell_capacity_kw * cost_parameters.fuel_cell_cost_usd_per_kw
 
-        # H2 storage cost = 0 in Excel model (we can add later)
         h2_storage_capex = 0.0
-
         component_sum = pv_capex + battery_capex + electrolyzer_capex + fuel_cell_capex + h2_storage_capex
-        bop_capex = 0.0  # Excel had 0% BOS in final version
+        bop_capex = 0.0
 
         total_capex = component_sum
         subsidy = total_capex * (financial_assumptions.capex_subsidy_percent / 100)
@@ -471,14 +503,18 @@ class HydrogenCalculator:
 
         discounted_energy = 0.0
         annual_energy_kwh = sizing.daily_consumption_kwh * 365
+        eol_factor = getattr(sizing, 'battery_eol_capacity_factor', 1.0)
         for yr in range(1, life + 1):
-            discounted_energy += annual_energy_kwh / ((1 + discount) ** yr)
+            year_factor = 1.0
+            if life > 1:
+                year_factor = max(eol_factor, 1.0 - (1.0 - eol_factor) * ((yr - 1) / (life - 1)))
+            discounted_energy += annual_energy_kwh * year_factor / ((1 + discount) ** yr)
 
         total_discounted_cost = inv_pre_subsidy + discounted_opex
 
-        # LCOE and LCOH based on discounted totals
+        # LCOE and LCOH based on discounted totals and battery degradation
         lcoe = total_discounted_cost / discounted_energy if discounted_energy > 0 else 0
-        annual_h2_kg = sizing.h2_daily_production_kg * 365
+        annual_h2_kg = sizing.h2_daily_production_kg * 365 * getattr(sizing, 'battery_capacity_factor', 1.0)
         lcoh = cls._calculate_lcoh(inv_pre_subsidy, annual_opex, annual_h2_kg, discount, life)
 
         return FinancialMetricsOutput(
@@ -649,6 +685,7 @@ class HydrogenCalculator:
     @classmethod
     def _calculate_sensitivity(
         cls,
+        input_data: SingleSiteInput,
         sizing: SizingOutput,
         capex: CapexBreakdownOutput,
         opex: OpexBreakdownOutput,
@@ -657,5 +694,255 @@ class HydrogenCalculator:
         efficiencies_constants,
     ) -> List[SensitivityScenario]:
         """Generate sensitivity scenarios for key parameters."""
-        # Simplified: return empty list for now
-        return []
+        scenarios = []
+        base = {
+            'cost_parameters': input_data.cost_parameters,
+            'financial_assumptions': input_data.financial_assumptions,
+        }
+
+        def build_scenario(name: str, description: str, cost_delta: float = 0.0, discount_delta: float = 0.0, eaas_delta: float = 0.0, battery_cost_delta: float = 0.0, fuel_cell_cost_delta: float = 0.0):
+            modified = input_data.model_copy(deep=True)
+            if cost_delta:
+                modified.cost_parameters = modified.cost_parameters.model_copy(deep=True)
+                modified.cost_parameters.solar_pv_cost_usd_per_kwp *= 1 + cost_delta
+                modified.cost_parameters.battery_cost_usd_per_kwh *= 1 + cost_delta
+                modified.cost_parameters.electrolyzer_cost_usd_per_kw *= 1 + cost_delta
+                modified.cost_parameters.fuel_cell_cost_usd_per_kw *= 1 + cost_delta
+            if battery_cost_delta:
+                modified.cost_parameters = modified.cost_parameters.model_copy(deep=True)
+                modified.cost_parameters.battery_cost_usd_per_kwh *= 1 + battery_cost_delta
+            if fuel_cell_cost_delta:
+                modified.cost_parameters = modified.cost_parameters.model_copy(deep=True)
+                modified.cost_parameters.fuel_cell_cost_usd_per_kw *= 1 + fuel_cell_cost_delta
+            if discount_delta:
+                modified.financial_assumptions = modified.financial_assumptions.model_copy(deep=True)
+                modified.financial_assumptions.discount_rate_percent = max(0.0, modified.financial_assumptions.discount_rate_percent + discount_delta)
+            if eaas_delta:
+                modified.financial_assumptions = modified.financial_assumptions.model_copy(deep=True)
+                modified.financial_assumptions.eaas_price_usd_per_kwh *= 1 + eaas_delta
+
+            cls._map_frontend_fields(modified)
+            daily_load_kw = modified.load_autonomy.site_load_kw or modified.load_autonomy.daily_load_kw or modified.load_autonomy.daily_load_kwh / 24
+            scenario_sizing = cls._calculate_sizing_from_load(
+                daily_load_kw=daily_load_kw,
+                load_autonomy=modified.load_autonomy,
+                efficiencies_constants=modified.efficiencies_constants,
+                sizing_safety_factors=modified.sizing_safety_factors,
+                cost_parameters=modified.cost_parameters,
+                financial_assumptions=modified.financial_assumptions,
+                monthly_ghi=modified.monthly_ghi,
+            )
+            scenario_capex = cls._calculate_capex(scenario_sizing, modified.cost_parameters, modified.financial_assumptions)
+            scenario_opex = cls._calculate_opex(scenario_sizing, scenario_capex, modified.financial_assumptions)
+            scenario_revenue = cls._calculate_revenue(scenario_sizing, modified.efficiencies_constants, modified.financial_assumptions, modified.cost_parameters)
+            scenario_financials = cls._calculate_financial_metrics(
+                scenario_capex,
+                scenario_opex,
+                scenario_revenue,
+                modified.financial_assumptions,
+                modified.efficiencies_constants,
+                scenario_sizing,
+            )
+            return SensitivityScenario(
+                name=name,
+                description=description,
+                financial_metrics=scenario_financials,
+            )
+
+        scenarios.append(build_scenario('Base Case', 'Original assumptions'))
+        scenarios.append(build_scenario('+10% CAPEX', 'Higher capital costs', cost_delta=0.10))
+        scenarios.append(build_scenario('-10% CAPEX', 'Lower capital costs', cost_delta=-0.10))
+        scenarios.append(build_scenario('+2% Discount Rate', 'Higher finance cost', discount_delta=2.0))
+        scenarios.append(build_scenario('-2% Discount Rate', 'Lower finance cost', discount_delta=-2.0))
+        scenarios.append(build_scenario('+15% EaaS Price', 'Higher electricity revenue', eaas_delta=0.15))
+        scenarios.append(build_scenario('-15% EaaS Price', 'Lower electricity revenue', eaas_delta=-0.15))
+        scenarios.append(build_scenario('+10% Battery Cost', 'Higher battery CAPEX', battery_cost_delta=0.10))
+        scenarios.append(build_scenario('-10% Fuel Cell Cost', 'Lower fuel cell CAPEX', fuel_cell_cost_delta=-0.10))
+
+        return scenarios
+
+    @classmethod
+    def estimate_location_monthly_psh(cls, latitude: float, longitude: float) -> List[float]:
+        """Estimate monthly average PSH using pvlib when available, otherwise fallback."""
+        try:
+            pd = importlib.import_module('pandas')
+            pvlib = importlib.import_module('pvlib')
+            Location = pvlib.location.Location
+
+            location = Location(latitude, longitude)
+            times = pd.date_range('2020-01-01', '2020-12-31 23:00', freq='H', tz='UTC')
+            clearsky = location.get_clearsky(times)
+            monthly_sum = clearsky['ghi'].resample('M').sum() / 1000.0
+            monthly_days = clearsky['ghi'].resample('M').count() / 24.0
+            return [round(float(monthly_sum.loc[idx] / monthly_days.loc[idx]), 2) for idx in monthly_sum.index]
+        except Exception:
+            return cls._estimate_monthly_psh_fallback(latitude, longitude)
+
+    @classmethod
+    def _estimate_monthly_psh_fallback(cls, latitude: float, longitude: float) -> List[float]:
+        """Fallback monthly PSH estimate using latitude-driven seasonality."""
+        lat_factor = max(0.5, 1.0 - abs(latitude) / 90.0)
+        base = 5.5 * lat_factor
+        monthly = []
+        for month in range(1, 13):
+            seasonal = 0.8 + 0.4 * math.cos(2 * math.pi * (month - 6) / 12)
+            monthly.append(round(max(1.0, base * seasonal), 2))
+        return monthly
+
+    @classmethod
+    def simulate_hourly(cls, input_data: SingleSiteInput, hourly_ghi: List[float]) -> List[HourlySnapshot]:
+        """Simulate hourly energy balance and component dispatch for one year."""
+        if len(hourly_ghi) != 8760:
+            raise ValueError('hourly_ghi must contain 8760 hourly values')
+
+        # Ensure input_data is normalized before running simulation.
+        sim_input = input_data.model_copy(deep=True)
+        cls._map_frontend_fields(sim_input)
+
+        la = sim_input.load_autonomy
+        ec = sim_input.efficiencies_constants
+        sizing = cls._calculate_sizing_from_load(
+            daily_load_kw=la.site_load_kw or la.daily_load_kw or la.daily_load_kwh / 24,
+            load_autonomy=la,
+            efficiencies_constants=ec,
+            sizing_safety_factors=sim_input.sizing_safety_factors,
+            cost_parameters=sim_input.cost_parameters,
+            financial_assumptions=sim_input.financial_assumptions,
+            monthly_ghi=sim_input.monthly_ghi,
+        )
+
+        battery_soc = sizing.battery_usable_kwh * 0.5
+        h2_stored = sizing.h2_storage_capacity_kg * 0.5
+        max_h2_storage = sizing.h2_storage_capacity_kg
+        battery_roundtrip_eff = ec.battery_efficiency_percent / 100
+        electrolyzer_eff = ec.electrolyzer_efficiency_percent / 100
+        fuel_cell_eff = ec.fuel_cell_efficiency_percent / 100
+        hydrogen_lhv = ec.hydrogen_lhv_kwh_per_kg
+        snapshots: List[HourlySnapshot] = []
+
+        for hour in range(8760):
+            ghi = hourly_ghi[hour]
+            pv_production = sizing.pv_capacity_kwp * ghi * ec.pv_efficiency_factor
+            load_kwh = sizing.daily_consumption_kwh / 24.0
+            net_energy = pv_production - load_kwh
+
+            battery_charge = 0.0
+            battery_discharge = 0.0
+            electrolyzer_dispatch = 0.0
+            fuel_cell_dispatch = 0.0
+            h2_produced = 0.0
+            h2_consumed = 0.0
+            excess_export = 0.0
+
+            if net_energy >= 0:
+                available_for_storage = min(net_energy, sizing.battery_usable_kwh - battery_soc)
+                battery_charge = available_for_storage * battery_roundtrip_eff
+                battery_soc += battery_charge
+                surplus = net_energy - available_for_storage
+
+                electrolyzer_dispatch = min(surplus, sizing.electrolyzer_capacity_kw)
+                h2_produced = electrolyzer_dispatch * electrolyzer_eff / hydrogen_lhv
+                h2_stored = min(max_h2_storage, h2_stored + h2_produced)
+                excess_export = max(0.0, surplus - electrolyzer_dispatch)
+            else:
+                demand = -net_energy
+                battery_discharge = min(demand, battery_soc)
+                battery_soc -= battery_discharge
+                demand -= battery_discharge
+
+                if demand > 0:
+                    fuel_cell_dispatch = min(demand, sizing.fuel_cell_capacity_kw)
+                    h2_needed = fuel_cell_dispatch / fuel_cell_eff / hydrogen_lhv
+                    h2_consumed = min(h2_stored, h2_needed)
+                    fuel_cell_dispatch = h2_consumed * fuel_cell_eff * hydrogen_lhv
+                    h2_stored -= h2_consumed
+                    demand -= fuel_cell_dispatch
+                    excess_export = 0.0
+
+            snapshots.append(HourlySnapshot(
+                hour=hour,
+                pv_production_kwh=round(pv_production, 4),
+                load_kwh=round(load_kwh, 4),
+                battery_soc_kwh=round(battery_soc, 4),
+                battery_charge_kwh=round(battery_charge, 4),
+                battery_discharge_kwh=round(battery_discharge, 4),
+                h2_produced_kg=round(h2_produced, 6),
+                h2_consumed_kg=round(h2_consumed, 6),
+                h2_stored_kg=round(h2_stored, 6),
+                electrolyzer_dispatch_kwh=round(electrolyzer_dispatch, 4),
+                fuel_cell_dispatch_kwh=round(fuel_cell_dispatch, 4),
+                excess_export_kwh=round(excess_export, 4),
+            ))
+
+        return snapshots
+
+    @classmethod
+    def optimize_sizing(cls, input_data: SingleSiteInput) -> OptimizationResult:
+        """Find the best battery and hydrogen autonomy pair to minimize LCOE."""
+        try:
+            scipy_optimize = importlib.import_module('scipy.optimize')
+            differential_evolution = scipy_optimize.differential_evolution
+        except ModuleNotFoundError as exc:
+            raise RuntimeError('scipy is required for optimization. Install scipy and retry.') from exc
+
+        baseline = input_data.model_copy(deep=True)
+        cls._map_frontend_fields(baseline)
+
+        def objective(variables):
+            battery_hours, hydrogen_hours = variables
+            candidate = baseline.model_copy(deep=True)
+            candidate.battery_autonomy_hours = float(battery_hours)
+            candidate.hydrogen_autonomy_hours = float(hydrogen_hours)
+            candidate.load_autonomy.battery_autonomy_hours = float(battery_hours)
+            candidate.load_autonomy.hydrogen_autonomy_hours = float(hydrogen_hours)
+            cls._map_frontend_fields(candidate)
+            daily_load_kw = candidate.load_autonomy.site_load_kw or candidate.load_autonomy.daily_load_kw or candidate.load_autonomy.daily_load_kwh / 24
+            sizing = cls._calculate_sizing_from_load(
+                daily_load_kw=daily_load_kw,
+                load_autonomy=candidate.load_autonomy,
+                efficiencies_constants=candidate.efficiencies_constants,
+                sizing_safety_factors=candidate.sizing_safety_factors,
+                cost_parameters=candidate.cost_parameters,
+                financial_assumptions=candidate.financial_assumptions,
+                monthly_ghi=candidate.monthly_ghi,
+            )
+            capex = cls._calculate_capex(sizing, candidate.cost_parameters, candidate.financial_assumptions)
+            opex = cls._calculate_opex(sizing, capex, candidate.financial_assumptions)
+            revenue = cls._calculate_revenue(sizing, candidate.efficiencies_constants, candidate.financial_assumptions, candidate.cost_parameters)
+            metrics = cls._calculate_financial_metrics(capex, opex, revenue, candidate.financial_assumptions, candidate.efficiencies_constants, sizing)
+            return metrics.lcoe_usd_per_kwh
+
+        bounds = [(1.0, 24.0), (0.0, 24.0)]
+        result = differential_evolution(objective, bounds=bounds, maxiter=15, popsize=10, polish=True)
+
+        best_battery, best_hydrogen = result.x
+        best_candidate = baseline.model_copy(deep=True)
+        best_candidate.battery_autonomy_hours = float(best_battery)
+        best_candidate.hydrogen_autonomy_hours = float(best_hydrogen)
+        best_candidate.load_autonomy.battery_autonomy_hours = float(best_battery)
+        best_candidate.load_autonomy.hydrogen_autonomy_hours = float(best_hydrogen)
+        cls._map_frontend_fields(best_candidate)
+        best_sizing = cls._calculate_sizing_from_load(
+            daily_load_kw=best_candidate.load_autonomy.site_load_kw or best_candidate.load_autonomy.daily_load_kw or best_candidate.load_autonomy.daily_load_kwh / 24,
+            load_autonomy=best_candidate.load_autonomy,
+            efficiencies_constants=best_candidate.efficiencies_constants,
+            sizing_safety_factors=best_candidate.sizing_safety_factors,
+            cost_parameters=best_candidate.cost_parameters,
+            financial_assumptions=best_candidate.financial_assumptions,
+            monthly_ghi=best_candidate.monthly_ghi,
+        )
+        best_capex = cls._calculate_capex(best_sizing, best_candidate.cost_parameters, best_candidate.financial_assumptions)
+        best_opex = cls._calculate_opex(best_sizing, best_capex, best_candidate.financial_assumptions)
+        best_revenue = cls._calculate_revenue(best_sizing, best_candidate.efficiencies_constants, best_candidate.financial_assumptions, best_candidate.cost_parameters)
+        best_metrics = cls._calculate_financial_metrics(best_capex, best_opex, best_revenue, best_candidate.financial_assumptions, best_candidate.efficiencies_constants, best_sizing)
+
+        return OptimizationResult(
+            optimal_battery_autonomy_hours=float(best_battery),
+            optimal_hydrogen_autonomy_hours=float(best_hydrogen),
+            optimal_lcoe_usd_per_kwh=best_metrics.lcoe_usd_per_kwh,
+            optimal_irr_percent=best_metrics.irr_percent,
+            optimal_npv_usd=best_metrics.npv_usd,
+            optimal_payback_period_years=best_metrics.payback_period_years,
+            optimization_success=bool(result.success),
+            optimization_message=result.message,
+        )
